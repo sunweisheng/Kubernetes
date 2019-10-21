@@ -10,9 +10,9 @@
 将虚拟机系统安装好，配置好网络设置。
 ![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-01.png)  
 
-## 安装Kubernetes（两台都要操作）
+## 安装Kubernetes(两台都要操作)
 
-### 安装前准备（两台都要操作）
+### 安装前准备(两台都要操作)
 
 在两台虚拟机上都进行以下操作：  
 关闭防火墙：
@@ -48,7 +48,7 @@ yum install -y ntp
 ntpdate ntp1.aliyun.com
 ```
 
-### 安装软件（两台都要安装）
+### 安装软件(两台都要安装)
 
 安装常用软件:
 
@@ -91,7 +91,7 @@ EOF
 yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
 ```
 
-### 安装后设置（两台都要安装）
+### 安装后设置(两台都要安装)
 
 关闭SELINUX：
 
