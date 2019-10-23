@@ -205,7 +205,7 @@ kubeadm init  --kubernetes-version=v1.16.2 --pod-network-cidr=10.244.0.0/16 --se
 如果希望详细的初始化日志输出可以增加--dry-run参数。
 
 * --kubernetes-version=v1.16.2 ： 加上该参数后启动相关镜像（刚才下载的那一堆）
-* --pod-network-cidr=10.244.0.0/16 ：（Pod 中间网络通讯我们用flannel，flannel要求是10.244.0.0/16）
+* --pod-network-cidr=10.244.0.0/16 ：（Pod 中间网络通讯我们用flannel，flannel要求是10.244.0.0/16，这个IP段就是Pod的IP段）
 * --service-cidr=10.96.0.0/12 ： Service（服务）网段（和微服务架构有关）
 
 在初始化结果输出里找到类似下面这段信息：
