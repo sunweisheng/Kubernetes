@@ -132,22 +132,6 @@ vi /etc/fstab
 swapoff -a
 ```
 
-添加国内Docker镜像：
-
-```shell
-vi etc/docker/daemon.json #文件不存在就创建
-
-#请在该配置文件中加入：
-
-{
-  "registry-mirrors": ["http://hub-mirror.c.163.com"]
-}
-
-#保存退出后执行
-sudo systemctl daemon-reload
-sudo systemctl restart docker
-```
-
 启动kubelet：
 
 ```shell
