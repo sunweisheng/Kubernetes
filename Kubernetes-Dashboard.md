@@ -1,5 +1,14 @@
 # 部署 Kubernetes Dashboard
 
+## 在Node1上下载Docker镜像
+
+因为k8s.gcr.io访问不了我们只能手动拉取：
+
+```shell
+docker pull bluersw/kubernetes-dashboard-amd64:v1.10.1 #替代k8s.gcr.io/kubernetes-dashboard-amd64:v1.10.1
+docker tag bluersw/kubernetes-dashboard-amd64:v1.10.1 k8s.gcr.io/kubernetes-dashboard-amd64:v1.10.1
+```
+
 ## 在Master上部署Dashboard
 
 安装部署请看[安装Kubernetes V1.16.2](Install.md)
@@ -18,15 +27,6 @@ kubectl get pod --namespace=kube-system -o wide | grep dashboard
 
 ![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-01.png)  
 从上图可以看出Master分配给Node1进行部署了，其实我们只有Node1这个Node节点，Master是不负责业务负载的。
-
-## 在Node1上下载Docker镜像
-
-因为k8s.gcr.io访问不了我们只能手动拉取：
-
-```shell
-docker pull bluersw/kubernetes-dashboard-amd64:v1.10.1 #替代k8s.gcr.io/kubernetes-dashboard-amd64:v1.10.1
-docker tag bluersw/kubernetes-dashboard-amd64:v1.10.1 k8s.gcr.io/kubernetes-dashboard-amd64:v1.10.1
-```
 
 ## 在Master上进行Dashboard配置
 
@@ -67,27 +67,12 @@ kubectl apply -f kubernetes-dashboard.yaml
 
 #查看结果
 kubectl get service -n kube-system | grep dashboard
+kubectl get -n kube-system pods -o wide
 ```
 
 我们通过Node1的IP进行访问：https://192.168.0.7:30005,打开页面后我们用Token登录。  
 
 ## 在Master上创建用户并获得Token
-
-创建用户：
-
-```shell
-#创建文件
-vi admin-user.yaml
-
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: admin-user
-  namespace: kube-system
-
-#保存退出后执行
-kubectl create -f admin-user.yaml
-```
 
 为用户分配权限：
 
@@ -98,26 +83,26 @@ vi dashboard-adminuser.yaml
 apiVersion: rbac.authorization.k8s.io/v1beta1
 kind: ClusterRoleBinding
 metadata:
-  name: admin-user
+  name: kubernetes-dashboard
   labels:
-    k8s-app: admin-user
+    k8s-app: kubernetes-dashboard
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: cluster-admin
 subjects:
 - kind: ServiceAccount
-  name: admin-user
+  name: kubernetes-dashboard
   namespace: kube-system
 
 #保存退出后执行
-kubectl apply -f dashboard-adminuser.yaml
+kubectl create -f dashboard-adminuser.yaml
 ```
 
 查看用户Token：
 
 ```shell
-kubectl -n kube-system describe secret $(kubectl -n kube-system get secret | grep admin-user | awk '{print $1}')
+kubectl -n kube-system describe secret $(kubectl -n kube-system get secret | grep kubernetes-dashboard | awk '{print $1}')
 ```
 
 ![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-02.png)  

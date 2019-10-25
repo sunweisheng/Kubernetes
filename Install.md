@@ -74,7 +74,7 @@ yum-config-manager \
 yum -y install docker-ce
 ```
 
-安装kubelet kubeadm kubectl (需要开启科学上网模式)：
+安装kubelet kubeadm kubectl (需要VPN)：
 
 ```shell
 cat <<EOF > /etc/yum.repos.d/kubernetes.repo
@@ -183,7 +183,7 @@ docker tag bluersw/flannel:v0.11.0-amd64 quay.io/coreos/flannel:v0.11.0-amd64
 执行kubeadm init初始化命令：
 
 ```shell
-kubeadm init  --kubernetes-version=v1.16.2 --pod-network-cidr=10.244.0.0/16 --service-cidr=10.96.0.0/12
+kubeadm init  --kubernetes-version=v1.16.2 --apiserver-advertise-address=192.168.0.4 --pod-network-cidr=10.244.0.0/16 --service-cidr=10.96.0.0/12
 ```
 
 如果希望详细的初始化日志输出可以增加--dry-run参数。
@@ -204,13 +204,8 @@ kubeadm join 192.168.0.4:6443 --token 4tylf5.av0mhvxmg7gorwfz \
 初始化成功后执行：
 
 ```shell
-#复制链接集群的密钥配置到Node1服务器上，如果有多台都要复制
-scp /etc/kubernetes/admin.conf node1:/etc/kubernetes/admin.conf
-
 #把密钥配置加载到自己的环境变量里
 export KUBECONFIG=/etc/kubernetes/admin.conf
-
-echo "source <(kubectl completion bash)" >> ~/.bashrc
 
 #每次启动自动加载$HOME/.kube/config下的密钥配置文件（K8S自动行为）
 mkdir -p $HOME/.kube
@@ -221,7 +216,7 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
 ## 在Master上安装flannel
 
-参照[官网](https://github.com/coreos/flannel)执行：
+参照[官网](https://github.com/coreos/flannel)执行(需要VPN)：
 
 ```shell
 kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
@@ -260,8 +255,6 @@ docker tag bluersw/flannel:v0.11.0-amd64 quay.io/coreos/flannel:v0.11.0-amd64
 mkdir -p $HOME/.kube
   sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
   sudo chown $(id -u):$(id -g) $HOME/.kube/config
-
-echo "source <(kubectl completion bash)" >> ~/.bashrc
 ```
 
 加入集群网络：
