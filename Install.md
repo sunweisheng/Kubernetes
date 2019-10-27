@@ -222,7 +222,7 @@ docker pull bluersw/flannel:v0.11.0-amd64 #替代 docker pull quay.io/coreos/fla
 docker tag bluersw/flannel:v0.11.0-amd64 quay.io/coreos/flannel:v0.11.0-amd64
 ```
 
-## Node1服务器加入集群网络
+## Node1服务器加入集群网络（在Node1上执行）
 
 加入集群网络：
 
@@ -231,7 +231,7 @@ kubeadm join 192.168.0.4:6443 --token 4tylf5.av0mhvxmg7gorwfz \
     --discovery-token-ca-cert-hash sha256:e67d5f759dd248a81b2e79cd8f9250b44c41d4102ef433d0f0e26268b90a10e8
 ```
 
-## 在Master上安装flannel
+## 在Master上安装flannel（在Master上执行）
 
 参照[官网](https://github.com/coreos/flannel)执行：
 
