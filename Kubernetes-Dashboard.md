@@ -8,6 +8,8 @@
 kubectl get pods -A  -o wide
 ```
 
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-02-2.png)  
+
 参照[官网安装说明](https://github.com/kubernetes/dashboard/blob/93474e53b9ce5a1de0acba93c5aff6295d91dd19/docs/user/installation.md)在master上执行：
 
 ```shell

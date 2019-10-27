@@ -242,7 +242,7 @@ kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documen
 ## 检查
 
 完成后观察Master上运行的pod,执行kubectl get -A pods -o wide：  
-![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-02-1.png)  
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-02-2.png)  
 执行kubectl get nodes查看节点：  
 ![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-04.png)  
 查看各个服务器上的镜像文件：  
