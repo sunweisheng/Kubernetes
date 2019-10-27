@@ -10,13 +10,15 @@ kubectl get pods -A  -o wide
 
 ![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-02-2.png)  
 
+## 下载并修改Dashboard安装脚本（在Master上执行）
+
 参照[官网安装说明](https://github.com/kubernetes/dashboard/blob/93474e53b9ce5a1de0acba93c5aff6295d91dd19/docs/user/installation.md)在master上执行：
 
 ```shell
 wget https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.0-beta5/aio/deploy/recommended.yaml
 ```
 
-修改recommended.yaml文件内容：
+修改recommended.yaml文件内容(vi recommended.yaml)：
 
 ```yaml
 ---
@@ -51,12 +53,14 @@ spec:
 ---
 ```
 
-创建证书：
+## 创建证书
 
 ```shell
 mkdir dashboard-certs
+
 cd dashboard-certs/
 
+#创建命名空间
 kubectl create namespace kubernetes-dashboard
 
 # 创建key文件
@@ -72,17 +76,24 @@ openssl x509 -req -in dashboard.csr -signkey dashboard.key -out dashboard.crt
 kubectl create secret generic kubernetes-dashboard-certs --from-file=dashboard.key --from-file=dashboard.crt -n kubernetes-dashboard
 ```
 
-安装Dashboard：
+## 安装Dashboard
 
 ```shell
+#安装
 kubectl create -f  ~/recommended.yaml
 
+#检查结果
 kubectl get pods -A  -o wide
 
 kubectl get service -n kubernetes-dashboard  -o wide
 ```
 
-创建dashboard管理员：
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-04.png)  
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-05.png)  
+
+## 创建dashboard管理员
+
+创建账号：
 
 ```shell
 vi dashboard-admin.yaml
@@ -131,18 +142,29 @@ subjects:
 kubectl create -f dashboard-admin-bind-cluster-role.yaml
 ```
 
-查看用户Token：
+查看并复制用户Token：
 
 ```shell
 kubectl -n kubernetes-dashboard describe secret $(kubectl -n kubernetes-dashboard get secret | grep dashboard-admin | awk '{print $1}')
 ```
 
-访问：https://192.168.0.7:30008，谷歌浏览器不让访问，Safari浏览器可以。
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-06.png)  
 
-----------------------------------
-![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-02.png)  
-注意token:后面的空格也是要一起复制的（其实那不是空格），复制到页面中登录：  
-![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-03.png)  
+访问：[https://192.168.0.7:30008](https://192.168.0.7:30008)，谷歌浏览器不行，但其他浏览器可以，比如Safari，选择Token登录，输入刚才复制的密钥：
+
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-07.png)  
+
+登录成功后：  
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-08.png)  
+
+登录成功后命名空间选择kube-system,并查看Pods:  
+
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-09.png)  
+因为没有安装metrics-server所以Pods的CPU、内存情况是看不到的。
+
+## 安装metrics-server
+
+Ps：heapster已经被metrics-server取代
 
 在Node1上下载镜像文件：
 
@@ -152,11 +174,13 @@ docker tag bluersw/metrics-server-amd64:v0.3.6 k8s.gcr.io/metrics-server-amd64:v
 ```
 
 在Master上执行安装：
-在[Kubernetes Metrics Server](https://github.com/kubernetes-incubator/metrics-server)下载K8S对象文件：[1.8+](https://github.com/kubernetes-incubator/metrics-server/tree/master/deploy/1.8%2B)
+在[Kubernetes Metrics Server](https://github.com/kubernetes-incubator/metrics-server)下载K8S对象声明文件：[1.8+](https://github.com/kubernetes-incubator/metrics-server/tree/master/deploy/1.8%2B)
 
 ```shell
+cd ~
 
 mkdir metrics-server
+
 cd metrics-server
 
 wget https://raw.githubusercontent.com/kubernetes-incubator/metrics-server/master/deploy/1.8%2B/aggregated-metrics-reader.yaml
@@ -175,11 +199,11 @@ wget https://raw.githubusercontent.com/kubernetes-incubator/metrics-server/maste
 
 ```
 
+修改安装脚本：
+
 ```shell
 vi metrics-server-deployment.yaml
 ```
-
-修改metrics-server-deployment.yaml脚本：
 
 ```yaml
 spec:
@@ -208,42 +232,20 @@ spec:
         volumeMounts:
         - name: tmp-dir
           mountPath: /tmp
-
-
-
-
-vi /etc/kubernetes/manifests/kube-apiserver.yaml  
-# - --requestheader-allowed-names=front-proxy-client
-- --requestheader-allowed-names=
 ```
 
+执行安装脚本并产看结果：
+
 ```shell
+#安装
 kubectl create -f ~/metrics-server
 
+#1-2分钟后查看结果
 kubectl top nodes
 ```
 
-安装 heapster
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-10.png)  
 
-```shell
-docker pull bluersw/heapster-influxdb-amd64:v1.5.2
-docker tag bluersw/heapster-influxdb-amd64:v1.5.2 k8s.gcr.io/heapster-influxdb-amd64:v1.5.2
-
-docker pull bluersw/heapster-amd64:v1.5.4
-docker tag bluersw/heapster-amd64:v1.5.4 k8s.gcr.io/heapster-amd64:v1.5.4
-
-docker pull bluersw/heapster-grafana-amd64:v5.0.4
-docker tag bluersw/heapster-grafana-amd64:v5.0.4 k8s.gcr.io/heapster-grafana-amd64:v5.0.4
-```
-
-在[https://github.com/kubernetes-retired](https://github.com/kubernetes-retired)下载对象配置文件[influxdb](https://github.com/kubernetes-retired/heapster/tree/master/deploy/kube-config/influxdb)
-
-
-apiVersion: extensions/v1beta1 改成 apiVersion: apps/v1 
-还有增加selector
-spec:
-  selector:
-    matchLabels:
-     k8s-app: heapster
-  replicas: 1
+再回到dashboard界面可以看到CPU和内存使用情况了：  
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Dashboard-11.png)  
   
