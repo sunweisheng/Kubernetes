@@ -32,15 +32,6 @@ hostnamectl set-hostname master
 hostnamectl set-hostname node1  
 ```
 
-修改Hosts文件：
-
-```shell
-vi /etc/hosts
-
-192.168.0.4 master
-192.168.0.7 node1
-```
-
 进行时间校时(用aliyun的NTP服务器)：
 
 ```shell
@@ -139,7 +130,7 @@ swapoff -a
 systemctl enable kubelet
 ```
 
-## 下载Master节点需要的镜像
+## 下载Master节点需要的镜像（在Master上执行）
 
 因为k8s.gcr.io访问不了，手动下载docker镜像，Master需要下载的镜像如下：  
 
@@ -178,19 +169,17 @@ docker pull bluersw/flannel:v0.11.0-amd64 #替代 docker pull quay.io/coreos/fla
 docker tag bluersw/flannel:v0.11.0-amd64 quay.io/coreos/flannel:v0.11.0-amd64
 ```
 
-## Master节点初始化
+## Master节点初始化（在Master上执行）
 
 执行kubeadm init初始化命令：
 
 ```shell
-kubeadm init  --kubernetes-version=v1.16.2 --apiserver-advertise-address=192.168.0.4 --pod-network-cidr=10.244.0.0/16 --service-cidr=10.96.0.0/12
+kubeadm init  --kubernetes-version=v1.16.2 --apiserver-advertise-address=192.168.0.4 --pod-network-cidr=10.244.0.0/16 --service-cidr=10.1.0.0/16
 ```
-
-如果希望详细的初始化日志输出可以增加--dry-run参数。
 
 * --kubernetes-version=v1.16.2 ： 加上该参数后启动相关镜像（刚才下载的那一堆）
 * --pod-network-cidr=10.244.0.0/16 ：（Pod 中间网络通讯我们用flannel，flannel要求是10.244.0.0/16，这个IP段就是Pod的IP段）
-* --service-cidr=10.96.0.0/12 ： Service（服务）网段（和微服务架构有关）
+* --service-cidr=10.1.0.0/16 ： Service（服务）网段（和微服务架构有关）
 
 在初始化结果输出里找到类似下面这段信息：
 
@@ -214,20 +203,7 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
 ```
 
-## 在Master上安装flannel
-
-参照[官网](https://github.com/coreos/flannel)执行(需要VPN)：
-
-```shell
-kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
-```
-
-完成后观察Master上运行的容器：  
-![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-02.png)  
-执行kubectl get nodes查看节点：  
-![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-03.png)  
-
-## 下载Node1节点需要的镜像
+## 下载Node1节点需要的镜像（在Node1上执行）
 
 因为k8s.gcr.io访问不了，手动下载docker镜像，Node1需要下载的镜像如下：  
 
@@ -248,15 +224,6 @@ docker tag bluersw/flannel:v0.11.0-amd64 quay.io/coreos/flannel:v0.11.0-amd64
 
 ## Node1服务器加入集群网络
 
-在Node1上执行以下命令，我们在上面Master节点上已经将admin.conf拷贝到Node1上：
-
-```shell
-#在node上执行就可以使用kubectl的相关命令了
-mkdir -p $HOME/.kube
-  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-  sudo chown $(id -u):$(id -g) $HOME/.kube/config
-```
-
 加入集群网络：
 
 ``` shell
@@ -264,6 +231,19 @@ kubeadm join 192.168.0.4:6443 --token 4tylf5.av0mhvxmg7gorwfz \
     --discovery-token-ca-cert-hash sha256:e67d5f759dd248a81b2e79cd8f9250b44c41d4102ef433d0f0e26268b90a10e8
 ```
 
-完成后查看是否正常：  
+## 在Master上安装flannel
+
+参照[官网](https://github.com/coreos/flannel)执行：
+
+```shell
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+```
+
+## 检查
+
+完成后观察Master上运行的pod,执行kubectl get -A pods -o wide：  
+![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-02-1.png)  
+执行kubectl get nodes查看节点：  
 ![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-04.png)  
+查看各个服务器上的镜像文件：  
 ![Alt text](http://static.bluersw.com/images/Kubernetes/Kubernetes-Install-05.png)  
