@@ -244,7 +244,7 @@ spec:
 apiVersion: extensions/v1beta1
 kind: Ingress
 metadata:
-  name: dashboard-ingress
+  name: default-backend-ingress
   namespace: nginx-ingress
   annotations:
     kubernetes.io/ingress.class: nginx
@@ -268,10 +268,16 @@ spec:
 kubectl apply -f dashboard-ingress.yaml
 
 #查看路由信息详情
-kubectl describe ingress dashboard-ingress -n kubernetes-dashboard
+kubectl describe ingress default-backend-ingress -n nginx-ingress
 
 #在宿主机上实现端口转发
 ssh -CNg -L 443:192.168.122.4:443 root@127.0.0.1
+
+kubectl exec  nginx-ingress-drccd -n nginx-ingress -- cat /etc/nginx/conf.d/nginx-ingress-cafe-ingress.conf
+
+curl --resolve cafe.example.com:443:10.244.1.12 https://cafe.example.com:443/tea --insecure
+
+https://github.com/nginxinc/kubernetes-ingress/tree/master/examples/complete-example
 
 ```
 
