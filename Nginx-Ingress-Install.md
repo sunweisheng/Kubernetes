@@ -1,4 +1,4 @@
-# 在K8S集群中使用安装NGINX Ingress V1.7
+# 在K8S集群中使用NGINX Ingress V1.7
 
 NGINX Ingress控制器有两个项目一个K8S官网维护（[官方项目github地址](https://github.com/kubernetes/ingress-nginx)），另一个是NGINX, Inc.维护的项目（[NGINX项目github地址](https://github.com/nginxinc/kubernetes-ingress)），因为差异很多两个项目不要弄混，以下示例是用NGINX维护的项目（[部署说明资料](https://github.com/nginxinc/kubernetes-ingress/tree/master/deployments)），我们采用Manifests文件部署方式[Installation with Manifests](https://docs.nginx.com/nginx-ingress-controller/installation/installation-with-manifests/)。
 
