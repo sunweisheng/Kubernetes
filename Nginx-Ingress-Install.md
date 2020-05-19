@@ -266,14 +266,14 @@ server{
     listen 80 default_server;
     server_name _;
     location / {
-        include head.conf;
-        proxy_pass proxy_svrs;
+        include ./conf.d/head.conf;
+        proxy_pass http://proxy_svrs;
     }
 }
 ```
 
 ```shell
-vi vi /etc/nginx/nginx.conf
+vi /etc/nginx/nginx.conf
 ```
 
 ```conf
