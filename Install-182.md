@@ -4,6 +4,8 @@
 
 [用KVM组建NAT网络虚拟机集群](https://github.com/sunweisheng/kvm/blob/master/Create-NAT-Cluster.md)
 
+(如果你使用VirtualBox搭建虚拟机集群，请确保hostname -i可以返回一个路由可达的IP，否则请修改虚拟机的hosts文件)
+
 ## 设置系统
 
 ```shell
