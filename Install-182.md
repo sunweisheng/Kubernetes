@@ -205,9 +205,47 @@ chmod 755 /etc/sysconfig/modules/ipvs.modules && bash /etc/sysconfig/modules/ipv
 kubectl get pod -n kube-system | grep kube-proxy |awk '{system("kubectl delete pod "$1" -n kube-system")}'
 ```
 
-问题解决。
+CLUSTER-IP的问题解决但IPVS引发了新的问题。
+
+## 解决使用IPVS导致CoreDNS无法解析域名的问题
+
+重启服务器，重新测试后发现，内外网都域名无法解析，原因是这个版本的K8S使用IPVS模块比较新，但CentOS系统内核的IPVS模块比较老导致，采用更新内核的办法解决(所有节点服务器)：
+
+```shell
+#载入公钥
+rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
+
+#安装 ELRepo 最新版本
+yum install -y https://www.elrepo.org/elrepo-release-7.el7.elrepo.noarch.rpm
+
+#列出可以使用的 kernel 包版本
+yum list available --disablerepo=* --enablerepo=elrepo-kernel
+
+#安装指定的 kernel 版本：
+yum install -y kernel-lt-4.4.223-1.el7.elrepo --enablerepo=elrepo-kernel
+
+#查看系统可用内核
+cat /boot/grub2/grub.cfg | grep menuentry
+
+menuentry 'CentOS Linux (4.4.223-1.el7.elrepo.x86_64) 7 (Core)'
+menuentry 'CentOS Linux (3.10.0-1127.el7.x86_64) 7 (Core)'
+
+#设置开机从新内核启动
+grub2-set-default "CentOS Linux (4.4.223-1.el7.elrepo.x86_64) 7 (Core)"
+
+#查看内核启动项
+grub2-editenv list
+
+#重启
+reboot
+
+#启动完成查看内核版本是否更新
+uname -r
+```
+
+重新进行测试，都没有问题了（终于完成了）。
 
 参考资料：
 
-* [coredns无法正常域名解析问题分析](https://blog.csdn.net/networken/article/details/105604173)
 * [在集群的POD内不能访问clusterIP和service](https://blog.51cto.com/13641616/2442005)
+* [coredns无法正常域名解析问题分析](https://blog.csdn.net/networken/article/details/105604173)
