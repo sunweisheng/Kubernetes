@@ -392,3 +392,8 @@ kubectl get pod -n kube-system | grep kube-proxy |awk '{system("kubectl delete p
 ```
 
 问题解决。
+
+参考资料：
+
+* [coredns无法正常域名解析问题分析](https://blog.csdn.net/networken/article/details/105604173)
+* [在集群的POD内不能访问clusterIP和service](https://blog.51cto.com/13641616/2442005)
