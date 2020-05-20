@@ -343,13 +343,15 @@ nslookup kubernetes.default
 ping 10.1.0.1
 ```
 
+## 解决CLUSTER-IP不能ping，连接不通的问题
+
 我发现的问题是CLUSTER-IP不能ping，此问题用修改kube-proxy为 ipvs模式的方案解决。
 
 ```shell
 kubectl edit cm kube-proxy -n kube-system
 ```
 
-将mode修改为ipvs
+将mode修改为ipvs:
 
 ```yaml
     ipvs:
