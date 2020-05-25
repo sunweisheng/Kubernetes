@@ -245,6 +245,8 @@ curl --resolve cafe.example.com:80:192.168.122.5 http://cafe.example.com/tea
 
 ## 修改宿主机Nginx配置
 
+[安装 Nginx](https://github.com/sunweisheng/kvm/blob/master/Install-Nginx.md)
+
 ```shell
 vi /etc/nginx/conf.d/proxy_svrs
 ```
