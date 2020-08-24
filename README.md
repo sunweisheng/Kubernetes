@@ -7,3 +7,4 @@
 * [安装Kubernetes V1.18.2](Install-182.md)
 * [Kubernetes V1.18.2部署Dashboard V2.0](Kubernetes-182-Dashboard.md)
 * [在K8S集群中使用NGINX Ingress V1.7](Nginx-Ingress-Install.md)
+* [Kubernetes配置文件示例](Kubernetes-Configuration.md)
