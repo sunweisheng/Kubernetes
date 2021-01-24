@@ -42,8 +42,8 @@ swapoff -a
 cd /etc/yum.repos.d/
 
 yum-config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
-
-yum -y install docker-ce
+# k8s 1.18.2 最高只支持docker到19.03.安装DOCKER时需要指定版本
+yum -y install docker-ce-19.03.9-3.el7 docker-ce-cli-19.03.9-3.el7
 
 #开机启动Docker
 systemctl start docker
@@ -64,8 +64,8 @@ repo_gpgcheck=0
 gpgkey=http://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg
        http://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg
 EOF
-
-yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+# 安装kube时需要指定版本，否则为最新版本
+yum install -y kubernetes-cni-0.7.5 kubelet-1.18.2 kubeadm-1.18.2 kubectl-1.18.2  --disableexcludes=kubernetes
 
 #开机启动kubelet
 systemctl enable kubelet
@@ -93,6 +93,9 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 #从Master安装成功提示中找到下面命令，在所有Node节点上执行
 kubeadm join 192.168.122.3:6443 --token t0ie01.1ya3iwrt0uofx45p \
     --discovery-token-ca-cert-hash sha256:14e36c483bb8180e740e953c8141d4e747a19e325a09007c675ba8fc64a95e27
+# 如果master安装完超过24小时还没有安装node节点。之前的令牌会过期。需要去主节点执行
+kubeadm token create --print-join-command
+# 创建一个新的24小时有效令牌
 ```
 
 ## 在Master节点上安装flannel网络
