@@ -422,7 +422,18 @@ kube-system   calico-node-67dcd                         0/1     Init:0/2   0    
 kube-system   coredns-5986966c54-26zjz                  0/1     Pending    0          74s
 
 #加入MicroK8s集群
-sudo microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3
+sudo microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3 --worker
+
+#显示
+Contacting cluster at 192.168.0.50
+
+The node has joined the cluster and will appear in the nodes list in a few seconds.
+
+This worker node gets automatically configured with the API server endpoints.
+If the API servers are behind a loadbalancer please set the '--refresh-interval' to '0s' in:
+    /var/snap/microk8s/current/args/apiserver-proxy
+and replace the API server endpoints with the one provided by the loadbalancer in:
+    /var/snap/microk8s/current/args/traefik/provider.yaml
 
 #查看所有node节点下的pod运行情况
 sudo microk8s kubectl get pods -A -o wide
@@ -502,5 +513,162 @@ kubernetes-dashboard        NodePort    10.152.183.140   <none>        443:32137
 https://192.168.0.50:32137/#/login
 ````
 
+## 开启nvidia插件
 
+在有GPU的电脑上执行（操作系统是Ubuntu桌面版本）：
 
+````shell
+# 检查显卡驱动确认安装了NVIDIA显卡和驱动
+nvidia-smi
+
+#显示
+Sun May 18 13:54:27 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 550.144.03             Driver Version: 550.144.03     CUDA Version: 12.4     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3090        Off |   00000000:65:00.0 Off |                  N/A |
+|  0%   29C    P8             22W /  390W |      26MiB /  24576MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A      1634      G   /usr/lib/xorg/Xorg                              9MiB |
+|    0   N/A  N/A      1756      G   /usr/bin/gnome-shell                            8MiB |
++-----------------------------------------------------------------------------------------+
+````
+
+````shell
+# 安装和加入集群
+sudo snap install microk8s --classic --channel=1.30/stable
+sudo microk8s join 192.168.0.50:25000/01219019dbcf7c61dc5cd098499fb7a7/5a4decc79ab3 --worker
+
+# 从Master节点复制镜像文件到GPU服务器（在Master节点执行）
+scp *.tar admin@192.168.0.15:~/tar/
+
+#导入镜像
+sudo microk8s ctr images import pause-3.7.tar 
+sudo microk8s ctr images import cni-3.25.1.tar
+sudo microk8s ctr images import calico-node-3.25.1.tar
+sudo microk8s ctr images import ingress-nginx-v1.11.5.tar
+
+# 将当前用户加入microk8s组并刷新组权限
+sudo usermod -a -G microk8s $USER
+newgrp microk8s
+
+# 启动nvidia插件（在Master节点执行）
+microk8s enable nvidia
+
+#显示
+Infer repository core for addon nvidia
+Addon core/dns is already enabled
+Addon core/helm3 is already enabled
+Checking if NVIDIA driver is already installed
+"nvidia" has been added to your repositories
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "nvidia" chart repository
+Update Complete. ⎈Happy Helming!⎈
+Deploy NVIDIA GPU operator
+Using operator GPU driver
+NAME: gpu-operator
+LAST DEPLOYED: Sun May 18 13:05:06 2025
+NAMESPACE: gpu-operator-resources
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+Deployed NVIDIA GPU operator
+
+# 检查部署情况
+sudo microk8s kubectl get pods -A -o wide
+
+# 又是一大堆镜像下载不了
+NAMESPACE                NAME                                                          READY   STATUS             RESTARTS       AGE     IP             NODE         NOMINATED NODE   READINESS GATES
+container-registry       registry-5776c58776-mtzt6                                     1/1     Running            5 (171m ago)   29h     10.1.235.236   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-operator-56b6cf869d-k7q9d                                 1/1     Running            0              87s     10.1.28.195    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-gc-5fcdc8894b-z4hlm       0/1     ErrImagePull       0              87s     10.1.28.194    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr   0/1     ImagePullBackOff   0              87s     10.1.28.196    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-2t9wv              0/1     ErrImagePull       0              87s     10.1.28.197    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-nwwh8              0/1     ErrImagePull       0              87s     10.1.235.242   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-rmqfz              0/1     ErrImagePull       0              87s     10.1.36.67     k8s-node1    <none>           <none>
+
+# 查看镜像名称（registry.k8s.io/nfd/node-feature-discovery:v0.14.2）
+sudo microk8s kubectl describe pod gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr  -n gpu-operator-resources
+#在能下载镜像的机器上下载镜像
+docker pull registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+#推送镜像到Master节点的registry私有仓库
+docker tag registry.k8s.io/nfd/node-feature-discovery:v0.14.2 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+docker push 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+#Master本地是可以使用registry插件的
+sudo microk8s ctr images pull localhost:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+sudo microk8s ctr images tag localhost:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2 registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+
+#导出tar文件
+docker save -o node-feature-discovery-v0.14.2.tar registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+#上传tar文件(传到两个服务器上)
+scp node-feature-discovery-v0.14.2.tar admin@192.168.0.15:~/tar/
+scp node-feature-discovery-v0.14.2.tar sunweisheng@192.168.0.51:~/
+#在GPU服务器（15）和Node节点（51）上都执行导入tar镜像文件命令
+sudo microk8s ctr images import node-feature-discovery-v0.14.2.tar
+````
+
+因驱动有冲突（cgroup v2 与 NVIDIA 设备权限管理不兼容，导致设备节点无法正确创建或访问），修改GPU Operator 的 ClusterPolicy，禁用符号链接验证。
+````shell
+sudo microk8s kubectl edit clusterpolicy -n gpu-operator-resources
+````
+
+````yaml
+validator:
+    #添加开始
+    driver:
+      env:
+      - name: DISABLE_DEV_CHAR_SYMLINK_CREATION
+        value: "true"
+    #添加结束
+    image: gpu-operator-validator
+    imagePullPolicy: IfNotPresent
+    plugin:
+      env:
+      - name: WITH_WORKLOAD
+        value: "false"
+    repository: nvcr.io/nvidia/cloud-native
+    version: v23.9.1
+````
+查看结果：
+
+````shell
+sudo microk8s kubectl get pods -A -o wide
+
+NAMESPACE                NAME                                                          READY   STATUS      RESTARTS        AGE     IP             NODE         NOMINATED NODE   READINESS GATES
+container-registry       registry-5776c58776-mtzt6                                     1/1     Running     5 (4h49m ago)   31h     10.1.235.236   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-feature-discovery-n6w4n                                   1/1     Running     0               58m     10.1.28.204    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-56b6cf869d-k7q9d                                 1/1     Running     0               118m    10.1.28.195    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-gc-5fcdc8894b-z4hlm       1/1     Running     0               118m    10.1.28.194    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr   1/1     Running     0               118m    10.1.28.196    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-2t9wv              1/1     Running     0               118m    10.1.28.197    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-nwwh8              1/1     Running     0               118m    10.1.235.242   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-rmqfz              1/1     Running     0               118m    10.1.36.67     k8s-node1    <none>           <none>
+gpu-operator-resources   nvidia-container-toolkit-daemonset-vr9ct                      1/1     Running     0               8m26s   10.1.28.200    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-cuda-validator-vp2qj                                   0/1     Completed   0               8m12s   10.1.28.205    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-dcgm-exporter-9nq7c                                    1/1     Running     0               58m     10.1.28.202    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-device-plugin-daemonset-n5fht                          1/1     Running     0               58m     10.1.28.201    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-operator-validator-27gpv                               1/1     Running     0               8m27s   10.1.28.203    ai-home      <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-589zq                       1/1     Running     6 (4h49m ago)   31h     10.1.235.234   k8s-master   <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-j2jdw                       1/1     Running     0               5h50m   10.1.28.193    ai-home      <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-knpqw                       1/1     Running     1 (4h49m ago)   5h59m   10.1.36.66     k8s-node1    <none>           <none>
+kube-system              calico-kube-controllers-796fb75cc-97tvl                       1/1     Running     5 (4h49m ago)   34h     10.1.235.239   k8s-master   <none>           <none>
+kube-system              calico-node-6v6g7                                             1/1     Running     3 (4h49m ago)   27h     192.168.0.50   k8s-master   <none>           <none>
+kube-system              calico-node-79c68                                             1/1     Running     1 (4h49m ago)   5h59m   192.168.0.51   k8s-node1    <none>           <none>
+kube-system              calico-node-rs8sf                                             1/1     Running     0               6h7m    192.168.0.15   ai-home      <none>           <none>
+kube-system              coredns-5986966c54-fmg4w                                      1/1     Running     5 (4h49m ago)   34h     10.1.235.235   k8s-master   <none>           <none>
+kube-system              dashboard-metrics-scraper-795895d745-8bhsp                    1/1     Running     5 (4h49m ago)   31h     10.1.235.237   k8s-master   <none>           <none>
+kube-system              hostpath-provisioner-7c8bdf94b8-nmvtn                         1/1     Running     6 (4h49m ago)   31h     10.1.235.241   k8s-master   <none>           <none>
+kube-system              kubernetes-dashboard-6796797fb5-r7f4k                         1/1     Running     5 (4h49m ago)   31h     10.1.235.238   k8s-master   <none>           <none>
+kube-system              metrics-server-7cff7889bd-hnrz5                               1/1     Running     5 (4h49m ago)   31h     10.1.235.240   k8s-master   <none>           <none>
+````
