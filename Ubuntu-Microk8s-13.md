@@ -1,8 +1,8 @@
-# 在Ubuntu Server中部署MicroK8s-1.3版本
+# 在Ubuntu Server中部署MicroK8s-1.30版本
 
 ## 准备环境
 
-两台KVM虚拟机都是Ubuntu Server版本操作系统，其中一台设为Master节点，另一台是Node节点，在两台虚拟机上都执行以下环境准备的命令：
+两台KVM虚拟机都是Ubuntu Server本操作系统，其中一台设为Master节点，另一台是Node节点，在两台虚拟机上都执行以下环境准备的命令：
 
 ````shell
 sudo apt update
@@ -72,7 +72,7 @@ sudo microk8s ctr images import pause-3.7.tar
 sudo microk8s ctr images ls
 ````
 
-## 同样处理其他镜像文件
+## 同样处理其他核心镜像文件
 
 ````shell
 #docker.io/calico/cni:v3.25.1
@@ -87,10 +87,10 @@ sudo microk8s ctr images import cni-3.25.1.tar
 ````
 
 ````shell
-#检查microk8s状态
+# 检查microk8s状态，不加60秒超时就会一直等
 sudo microk8s status --wait-ready -t 60
 
-#显示以下内容表示部署完成
+# 显示以下内容表示部署完成，核心的镜像导入之后可显示部署完成，但实际上还有很多镜像文件下载不了
 microk8s is running
 high-availability: no
   datastore master nodes: 127.0.0.1:19001
@@ -124,7 +124,7 @@ addons:
     storage              # (core) Alias to hostpath-storage add-on, deprecated
 ````
 
-## 在Master节点上开启相关插件
+## 在Master节点上开启需要的插件
 
 开启dashboard、ingress、hostpath-storage、metrics-server、registry
 
@@ -136,9 +136,7 @@ sudo microk8s enable ingress
 
 sudo microk8s enable hostpath-storage
 
-#开启Docker私有库插件(本来想用私有库共享给其他节点使用单没有成功，容器的ctr images pull始终用https访问不能用http访问，最后放弃了)
 sudo microk8s enable registry
-
 ````
 
 ## 修复不能启动的Pod
@@ -163,7 +161,7 @@ kube-system          metrics-server-7cff7889bd-hnrz5              0/1     Contai
 
 ````
 
-需要一个一个处理：
+需要一个一个处理，在可以下载镜像的电脑上把缺少的镜像都下载后通过tar导入到Master节点上（或需要这些镜像的服务器上），跳过从DockerHub上下载的过程。
 
 ````shell
 #查看不能下载的镜像名称
@@ -295,15 +293,319 @@ kube-system          kubernetes-dashboard-6796797fb5-r7f4k        1/1     Runnin
 kube-system          metrics-server-7cff7889bd-hnrz5              1/1     Running   0          172m
 ````
 
-## 设置私有镜像仓库并推送镜像（非必须）
-经过后续试验发现push是可以的，但不管怎么设置pull拉取镜像时无论是Docker还是MicroK8s的containers都只访问https不能访问http所以这个私有仓库试验失败了。
-在Master上查看私有Docker仓库设置是否正确：
+## 将另一个虚拟机加入MicroK8s集群成为Node（worker）节点
+
+microk8s的主节点本身就是一个worker节点，现在Master节点上运行命令显示出加入集群的命令和密钥，密钥只使用一次每加入一台服务器都需要重新执行命令查看密钥。
+
 ````shell
-sudo microk8s kubectl edit svc registry -n container-registry
+# 在Master上执行
+sudo microk8s add-node
+
+# 显示
+From the node you wish to join to this cluster, run the following:
+microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3
+
+Use the '--worker' flag to join a node as a worker not running the control plane, eg:
+microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3 --worker
+
+If the node you are adding is not reachable through the default interface you can use one of the following:
+microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3
+microk8s join 2408:8207:1950:d771:5054:ff:fec4:e61e:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3
 ````
 
-将 spec.ports 中的 port: 32000 下方添加 nodePort: 32000，并修改 type: ClusterIP 为 type: NodePort：
+## 将Node节点加入MicroK8s集群
 
+在Node节点服务器上执行如下命令：
+
+````shell
+#安装
+sudo snap install microk8s --classic --channel=1.30/stable
+
+#安装后pod依旧不能启动
+sudo microk8s kubectl get pods -A
+
+NAMESPACE     NAME                                      READY   STATUS     RESTARTS   AGE
+kube-system   calico-kube-controllers-796fb75cc-lmkf9   0/1     Pending    0          74s
+kube-system   calico-node-67dcd                         0/1     Init:0/2   0          75s
+kube-system   coredns-5986966c54-26zjz                  0/1     Pending    0          74s
+
+#加入MicroK8s集群，注意要增加--worker参数
+sudo microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3 --worker
+
+#显示
+Contacting cluster at 192.168.0.50
+
+The node has joined the cluster and will appear in the nodes list in a few seconds.
+
+This worker node gets automatically configured with the API server endpoints.
+If the API servers are behind a loadbalancer please set the '--refresh-interval' to '0s' in:
+    /var/snap/microk8s/current/args/apiserver-proxy
+and replace the API server endpoints with the one provided by the loadbalancer in:
+    /var/snap/microk8s/current/args/traefik/provider.yaml
+````
+
+````shell
+#在Master上查看所有node节点下的pod运行情况
+sudo microk8s kubectl get pods -A -o wide
+
+NAMESPACE            NAME                                         READY   STATUS     RESTARTS      AGE     IP             NODE         NOMINATED NODE   READINESS GATES
+container-registry   registry-5776c58776-mtzt6                    1/1     Running    2             5h38m   10.1.235.216   k8s-master   <none>           <none>
+ingress              nginx-ingress-microk8s-controller-589zq      1/1     Running    2             5h43m   10.1.235.211   k8s-master   <none>           <none>
+kube-system          calico-kube-controllers-796fb75cc-97tvl      1/1     Running    2             8h      10.1.235.214   k8s-master   <none>           <none>
+kube-system          calico-node-6v6g7                            1/1     Running    0             98m     192.168.0.50   k8s-master   <none>           <none>
+kube-system          calico-node-qvm65                            0/1     Init:0/2   0             97m     192.168.0.51   k8s-node1    <none>           <none>
+kube-system          coredns-5986966c54-fmg4w                     1/1     Running    2             8h      10.1.235.213   k8s-master   <none>           <none>
+kube-system          dashboard-metrics-scraper-795895d745-8bhsp   1/1     Running    2             5h47m   10.1.235.212   k8s-master   <none>           <none>
+kube-system          hostpath-provisioner-7c8bdf94b8-nmvtn        1/1     Running    3 (98m ago)   5h42m   10.1.235.217   k8s-master   <none>           <none>
+kube-system          kubernetes-dashboard-6796797fb5-r7f4k        1/1     Running    2             5h47m   10.1.235.215   k8s-master   <none>           <none>
+kube-system          metrics-server-7cff7889bd-hnrz5              1/1     Running    2             5h47m   10.1.235.210   k8s-master   <none>           <none>
+
+#创建SSH登录密钥方便从Master节点链接Node节点传输文件
+ssh-keygen -t rsa -b 4096 -C "sunweisheng"
+ssh-copy-id sunweisheng@192.168.0.51
+
+#从Master节点传输Node节点必要的镜像
+scp pause-3.7.tar sunweisheng@192.168.0.51:~/
+scp cni-3.25.1.tar sunweisheng@192.168.0.51:~/
+scp calico-node-3.25.1.tar sunweisheng@192.168.0.51:~/
+scp ingress-nginx-v1.11.5.tar sunweisheng@192.168.0.51:~/
+````
+
+````shell
+#在Node节点上导入镜像
+sudo microk8s ctr images import pause-3.7.tar 
+sudo microk8s ctr images import cni-3.25.1.tar
+sudo microk8s ctr images import calico-node-3.25.1.tar
+sudo microk8s ctr images import ingress-nginx-v1.11.5.tar
+````
+
+````shell
+#在Master下查看所有node节点下的pod运行情况
+sudo microk8s kubectl get pods -A -o wide
+
+#显示
+NAMESPACE            NAME                                         READY   STATUS    RESTARTS      AGE    IP             NODE         NOMINATED NODE   READINESS GATES
+container-registry   registry-5776c58776-mtzt6                    1/1     Running   3 (32m ago)   9h     10.1.235.219   k8s-master   <none>           <none>
+ingress              nginx-ingress-microk8s-controller-589zq      1/1     Running   4 (31m ago)   9h     10.1.235.225   k8s-master   <none>           <none>
+ingress              nginx-ingress-microk8s-controller-rptkg      1/1     Running   0             11m    10.1.36.65     k8s-node1    <none>           <none>
+kube-system          calico-kube-controllers-796fb75cc-97tvl      1/1     Running   3 (32m ago)   12h    10.1.235.223   k8s-master   <none>           <none>
+kube-system          calico-node-6v6g7                            1/1     Running   1 (32m ago)   5h7m   192.168.0.50   k8s-master   <none>           <none>
+kube-system          calico-node-qvm65                            1/1     Running   0             5h6m   192.168.0.51   k8s-node1    <none>           <none>
+kube-system          coredns-5986966c54-fmg4w                     1/1     Running   3 (32m ago)   12h    10.1.235.224   k8s-master   <none>           <none>
+kube-system          dashboard-metrics-scraper-795895d745-8bhsp   1/1     Running   3 (32m ago)   9h     10.1.235.222   k8s-master   <none>           <none>
+kube-system          hostpath-provisioner-7c8bdf94b8-nmvtn        1/1     Running   4 (32m ago)   9h     10.1.235.221   k8s-master   <none>           <none>
+kube-system          kubernetes-dashboard-6796797fb5-r7f4k        1/1     Running   3 (32m ago)   9h     10.1.235.220   k8s-master   <none>           <none>
+kube-system          metrics-server-7cff7889bd-hnrz5              1/1     Running   3 (32m ago)   9h     10.1.235.218   k8s-master   <none>           <none>
+
+#查看节点信息
+microk8s kubectl get nodes
+
+#显示
+NAME         STATUS   ROLES    AGE     VERSION
+k8s-master   Ready    <none>   12h     v1.30.11
+k8s-node1    Ready    <none>   5h12m   v1.30.11
+````
+
+## 配置和查看MicroK8s的仪表盘（Dashboard）
+
+在Master节点执行：
+
+````shell
+#创建登录Dashboard的token
+microk8s kubectl create token kubernetes-dashboard -n kube-system
+
+#显示登录Token
+eyJhbGciOiJSUzI1NiIsImtpZCI6Ilk3UHlScTZvc0J1SEh0VU85Rjh2VUs5QTdaQkdtVTZ0aFFzYUJ2aDMtb0kifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjIl0sImV4cCI6MTc0NzUwMzk1OSwiaWF0IjoxNzQ3NTAwMzU5LCJpc3MiOiJodHRwczovL2t1YmVybmV0ZXMuZGVmYXVsdC5zdmMiLCJqdGkiOiJjNmQxZGUwNS0yM2EyLTQ1MTEtOTYzNy1jZTAxODNhODdkMmEiLCJrdWJlcm5ldGVzLmlvIjp7Im5hbWVzcGFjZSI6Imt1YmUtc3lzdGVtIiwic2VydmljZWFjY291bnQiOnsibmFtZSI6Imt1YmVybmV0ZXMtZGFzaGJvYXJkIiwidWlkIjoiY2MxZWU5MDctM2MwNS00ZTg4LThkMDgtOGVkMDcxNWQwMGNmIn19LCJuYmYiOjE3NDc1MDAzNTksInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDprdWJlLXN5c3RlbTprdWJlcm5ldGVzLWRhc2hib2FyZCJ9.pZGx7aG7cYIKhZjw2rboVHASMZ3gP2Z3THxSjhfTcgdTklhhkSF38x2qwhvTdQxeRwP2FhdHDjWaQpZTClzyqgmluAORQME48sbbeyMCIS4Auu9jgAZNC6BW4e-AKsvDqhu1XB4vVVVfi6BQfbpSKRUp_04R5pSa21GmzB9r_bKlqljWAv-hhogEi3cSlhGyetiT3DFeEBY5t91nwomTVILThZObdFF5xSmrEOLOX109Fm0fEJDR-M3Qzrj9exduNPMrpEZnnT9OckNevjpGVK6LDqiZM6_GeV-MGt3ss9Av4ljqHjDrnfv_RAglInYG5SZVY9b_E-jDwMyLETv-Hw
+
+#直接暴露服务（不安全，仅测试用）
+microk8s kubectl patch svc kubernetes-dashboard -n kube-system -p '{"spec": {"type": "NodePort"}}'
+
+microk8s kubectl get svc -n kube-system | grep dashboard
+
+#显示
+kubernetes-dashboard        NodePort    10.152.183.140   <none>        443:32137/TCP            9h
+
+#用浏览器直接访问，输入上面的Token即可登录成功
+https://192.168.0.50:32137/#/login
+````
+
+## 开启nvidia插件
+
+在有GPU的服务器上执行（该服务器操作系统是Ubuntu桌面版本）：
+
+````shell
+# 检查显卡驱动确认安装了NVIDIA显卡和驱动
+nvidia-smi
+
+#显示显卡信息和驱动信息
+Sun May 18 13:54:27 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 550.144.03             Driver Version: 550.144.03     CUDA Version: 12.4     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3090        Off |   00000000:65:00.0 Off |                  N/A |
+|  0%   29C    P8             22W /  390W |      26MiB /  24576MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A      1634      G   /usr/lib/xorg/Xorg                              9MiB |
+|    0   N/A  N/A      1756      G   /usr/bin/gnome-shell                            8MiB |
++-----------------------------------------------------------------------------------------+
+# 安装和加入集群
+sudo snap install microk8s --classic --channel=1.30/stable
+
+# 更换了加入集群的Token
+sudo microk8s join 192.168.0.50:25000/01219019dbcf7c61dc5cd098499fb7a7/5a4decc79ab3 --worker
+````
+
+````shell
+# 从Master节点复制镜像文件到GPU服务器（在Master节点执行）
+scp *.tar admin@192.168.0.15:~/tar/
+````
+
+````shell
+# 在GPU服务器上执行导入镜像
+sudo microk8s ctr images import pause-3.7.tar 
+sudo microk8s ctr images import cni-3.25.1.tar
+sudo microk8s ctr images import calico-node-3.25.1.tar
+sudo microk8s ctr images import ingress-nginx-v1.11.5.tar
+
+# 将当前用户加入microk8s组并刷新组权限
+sudo usermod -a -G microk8s $USER
+newgrp microk8s
+````
+
+````shell
+# 在Master节点执行启动nvidia插件
+microk8s enable nvidia
+
+#显示
+Infer repository core for addon nvidia
+Addon core/dns is already enabled
+Addon core/helm3 is already enabled
+Checking if NVIDIA driver is already installed
+"nvidia" has been added to your repositories
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "nvidia" chart repository
+Update Complete. ⎈Happy Helming!⎈
+Deploy NVIDIA GPU operator
+Using operator GPU driver
+NAME: gpu-operator
+LAST DEPLOYED: Sun May 18 13:05:06 2025
+NAMESPACE: gpu-operator-resources
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+Deployed NVIDIA GPU operator
+
+# 检查部署情况
+sudo microk8s kubectl get pods -A -o wide
+
+# 又是一大堆镜像下载不了(部分显示信息)
+NAMESPACE                NAME                                                          READY   STATUS             RESTARTS       AGE     IP             NODE         NOMINATED NODE   READINESS GATES
+container-registry       registry-5776c58776-mtzt6                                     1/1     Running            5 (171m ago)   29h     10.1.235.236   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-operator-56b6cf869d-k7q9d                                 1/1     Running            0              87s     10.1.28.195    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-gc-5fcdc8894b-z4hlm       0/1     ErrImagePull       0              87s     10.1.28.194    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr   0/1     ImagePullBackOff   0              87s     10.1.28.196    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-2t9wv              0/1     ErrImagePull       0              87s     10.1.28.197    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-nwwh8              0/1     ErrImagePull       0              87s     10.1.235.242   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-rmqfz              0/1     ErrImagePull       0              87s     10.1.36.67     k8s-node1    <none>           <none>
+````
+
+````shell
+# 查看镜像名称（registry.k8s.io/nfd/node-feature-discovery:v0.14.2）
+sudo microk8s kubectl describe pod gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr  -n gpu-operator-resources
+#在能下载镜像的机器上下载镜像
+docker pull registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+#推送镜像到Master节点的registry私有仓库
+docker tag registry.k8s.io/nfd/node-feature-discovery:v0.14.2 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+docker push 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+#Master本地是可以使用registry插件仓库，拉去镜像并修改tag
+sudo microk8s ctr images pull localhost:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+sudo microk8s ctr images tag localhost:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2 registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+
+#在能下载镜像的机器上导出tar文件
+docker save -o node-feature-discovery-v0.14.2.tar registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+#上传tar文件(传到Node和GPU两个服务器上)
+scp node-feature-discovery-v0.14.2.tar admin@192.168.0.15:~/tar/
+scp node-feature-discovery-v0.14.2.tar sunweisheng@192.168.0.51:~/
+#在GPU服务器（15）和Node节点（51）上都执行导入tar镜像文件命令
+sudo microk8s ctr images import node-feature-discovery-v0.14.2.tar
+````
+
+因为nvidia-cuda-validator-vp2qj（Pod）错误，导致其他Pod无法启动，查日志发现因驱动有冲突（cgroup v2 与 NVIDIA 设备权限管理不兼容，导致设备节点无法正确创建或访问，造成了Pod错误），修改GPU Operator 的 ClusterPolicy，禁用符号链接验证。
+````shell
+# 在Master节点上执行
+sudo microk8s kubectl edit clusterpolicy -n gpu-operator-resources
+````
+````yaml
+validator:
+    #添加内容开始
+    driver:
+      env:
+      - name: DISABLE_DEV_CHAR_SYMLINK_CREATION
+        value: "true"
+    #添加内容结束
+    image: gpu-operator-validator
+    imagePullPolicy: IfNotPresent
+    plugin:
+      env:
+      - name: WITH_WORKLOAD
+        value: "false"
+    repository: nvcr.io/nvidia/cloud-native
+    version: v23.9.1
+````
+保存之后Pod自动重启，然后查看结果：
+
+````shell
+# 在Master上执行（看来nvidia的镜像下载站点是可以正常使用的）
+sudo microk8s kubectl get pods -A -o wide
+
+NAMESPACE                NAME                                                          READY   STATUS      RESTARTS        AGE     IP             NODE         NOMINATED NODE   READINESS GATES
+container-registry       registry-5776c58776-mtzt6                                     1/1     Running     5 (4h49m ago)   31h     10.1.235.236   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-feature-discovery-n6w4n                                   1/1     Running     0               58m     10.1.28.204    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-56b6cf869d-k7q9d                                 1/1     Running     0               118m    10.1.28.195    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-gc-5fcdc8894b-z4hlm       1/1     Running     0               118m    10.1.28.194    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr   1/1     Running     0               118m    10.1.28.196    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-2t9wv              1/1     Running     0               118m    10.1.28.197    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-nwwh8              1/1     Running     0               118m    10.1.235.242   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-rmqfz              1/1     Running     0               118m    10.1.36.67     k8s-node1    <none>           <none>
+gpu-operator-resources   nvidia-container-toolkit-daemonset-vr9ct                      1/1     Running     0               8m26s   10.1.28.200    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-cuda-validator-vp2qj                                   0/1     Completed   0               8m12s   10.1.28.205    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-dcgm-exporter-9nq7c                                    1/1     Running     0               58m     10.1.28.202    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-device-plugin-daemonset-n5fht                          1/1     Running     0               58m     10.1.28.201    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-operator-validator-27gpv                               1/1     Running     0               8m27s   10.1.28.203    ai-home      <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-589zq                       1/1     Running     6 (4h49m ago)   31h     10.1.235.234   k8s-master   <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-j2jdw                       1/1     Running     0               5h50m   10.1.28.193    ai-home      <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-knpqw                       1/1     Running     1 (4h49m ago)   5h59m   10.1.36.66     k8s-node1    <none>           <none>
+kube-system              calico-kube-controllers-796fb75cc-97tvl                       1/1     Running     5 (4h49m ago)   34h     10.1.235.239   k8s-master   <none>           <none>
+kube-system              calico-node-6v6g7                                             1/1     Running     3 (4h49m ago)   27h     192.168.0.50   k8s-master   <none>           <none>
+kube-system              calico-node-79c68                                             1/1     Running     1 (4h49m ago)   5h59m   192.168.0.51   k8s-node1    <none>           <none>
+kube-system              calico-node-rs8sf                                             1/1     Running     0               6h7m    192.168.0.15   ai-home      <none>           <none>
+kube-system              coredns-5986966c54-fmg4w                                      1/1     Running     5 (4h49m ago)   34h     10.1.235.235   k8s-master   <none>           <none>
+kube-system              dashboard-metrics-scraper-795895d745-8bhsp                    1/1     Running     5 (4h49m ago)   31h     10.1.235.237   k8s-master   <none>           <none>
+kube-system              hostpath-provisioner-7c8bdf94b8-nmvtn                         1/1     Running     6 (4h49m ago)   31h     10.1.235.241   k8s-master   <none>           <none>
+kube-system              kubernetes-dashboard-6796797fb5-r7f4k                         1/1     Running     5 (4h49m ago)   31h     10.1.235.238   k8s-master   <none>           <none>
+kube-system              metrics-server-7cff7889bd-hnrz5                               1/1     Running     5 (4h49m ago)   31h     10.1.235.240   k8s-master   <none>           <none>
+````
+
+## 通过Registry仓库插件简化部署工作
+
+在上面的操作步骤中因为下载不了镜像导致一个服务器加入节点或启动插件都需要大量传输镜像文件操作，以下内容是通过Registry插件简化镜像分发工作，另外该Registry仓库也是以后部署自己开发镜像的存储仓库，可以直接在Deployment定义并简化集群内部署自己开发镜像的工作。
+如果要让集群内所有资源都能访问则Registry插件需要改为nodePort访问方式。
+````shell
+# 在Master上查看私有Docker仓库设置是否正确
+sudo microk8s kubectl edit svc registry -n container-registry
+````
+将 spec.ports 中的 port: 32000 下方添加 nodePort: 32000，并修改 type: ClusterIP 为 type: NodePort：
 ````yaml
 spec:
   ports:
@@ -312,21 +614,20 @@ spec:
     nodePort: 32000  # 手动指定节点端口
   type: NodePort     # 修改为 NodePort
 ````
-
 保存后，其他机器可通过 <主节点IP>:32000 访问。
 
-因为不是HTTPS所以需要在可以下载镜像的电脑上修改daemon.json文件，在文件中增加：
+可以下载镜像的电脑安装的是Docker环境，所以要修改daemon.json设置，支持非HTTPS场景，在文件中增加配置内：
 
 ````json
 {
   "insecure-registries": [
-    "192.168.0.50:32000"
+    "http://192.168.0.50:32000"
   ]
 }
 ````
 重启Docker。
 
-向私有仓库推送镜像：
+在Docker环境向私有仓库推送上面过程中下载的镜像：
 
 ````shell
 docker tag calico/cni:v3.25.1 192.168.0.50:32000/calico/cni:v3.25.1
@@ -365,10 +666,13 @@ docker push 192.168.0.50:32000/kubernetesui/metrics-scraper:v1.0.8
 docker tag busybox:1.28.4 192.168.0.50:32000/busybox:1.28.4
 docker push 192.168.0.50:32000/busybox:1.28.4
 
+# 这个镜像前面已经传过了这次可以不推送，这里只是做个记录
+docker tag registry.k8s.io/nfd/node-feature-discovery:v0.14.2 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+docker push 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
 #查看结果
 curl http://192.168.0.50:32000/v2/_catalog
 ````
-预期结果：
+显示结果：
 ````json
 {
   "repositories": [
@@ -383,292 +687,171 @@ curl http://192.168.0.50:32000/v2/_catalog
     "registry",
     "registry.k8s.io/ingress-nginx/controller",
     "registry.k8s.io/metrics-server/metrics-server",
-    "registry.k8s.io/pause"
+    "registry.k8s.io/pause",
+    "registry.k8s.io/nfd/node-feature-discovery"
   ]
 }
 ````
-
-## 显示加入microk8s集群的信息
-
-microk8s的主节点本身就是一个worker节点。
+在Docker环境中测试一下拉取镜像
 
 ````shell
-sudo microk8s add-node
-
-#显示
-From the node you wish to join to this cluster, run the following:
-microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3
-
-Use the '--worker' flag to join a node as a worker not running the control plane, eg:
-microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3 --worker
-
-If the node you are adding is not reachable through the default interface you can use one of the following:
-microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3
-microk8s join 2408:8207:1950:d771:5054:ff:fec4:e61e:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3
+docker pull 192.168.0.50:32000/busybox:1.28.4
 ````
 
-## 将Node节点加入MicroK8s集群
+新增加一台Node服务器（服务器名称：db-home）用于测试使用Registry插件的情况，实现两个目的：
+* 部署MicroK8s时不用手工传输镜像文件，新的节点可以自动从Registry私有仓库拉新镜像完成Node节点的初始化。
+* 可以通过MicroK8s的Containerd（容器环境）拉取Registry私有仓库内的镜像到本地
+
+在db-home服务器上安装MicroK8s并加入现有集群中：
 
 ````shell
-#安装
+#在db-home上执行安装
 sudo snap install microk8s --classic --channel=1.30/stable
 
-#安装后pod依旧不能启动
+#安装后查看pod不能启动情况
 sudo microk8s kubectl get pods -A
 
 NAMESPACE     NAME                                      READY   STATUS     RESTARTS   AGE
 kube-system   calico-kube-controllers-796fb75cc-lmkf9   0/1     Pending    0          74s
 kube-system   calico-node-67dcd                         0/1     Init:0/2   0          75s
 kube-system   coredns-5986966c54-26zjz                  0/1     Pending    0          74s
+````
 
-#加入MicroK8s集群
+在db-home上增加私有仓库设置，因为MicroK8s默认是Containerd环境，所以设置方法与Docker环境设置方式差异很大。
+
+在db-home上创建如下目录和文件内容：
+
+````shell
+# 配置所有未单独配置的Registry的默认镜像仓库。
+# 默认的镜像仓库镜像（Registry Mirror），使得所有拉取镜像的请求都会被重定向到指定的镜像仓库。
+# 行为：
+# 当拉取镜像（如 XXX.XXX/library/nginx）时，Containerd 先尝试 192.168.0.50:32000。
+# 如果 192.168.0.50:32000 没有该镜像，仍然会回退到原始 registry（如 XXX.XXX/library/nginx）。
+sudo mkdir /etc/containerd/certs.d/_default/
+sudo vi /etc/containerd/certs.d/_default/hosts.toml
+````
+添加如下信息
+````toml
+# 非单独配置仓库先看看私有仓库汇总有没有镜像如果没有再从目标仓库拉取
+[host."http:192.168.0.50:32000"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+````
+修改docker.io仓库的配置内容增加新的镜像仓库：
+````shell
+sudo vi etc/containerd/certs.d/_default/docker.io/hosts.toml
+````
+添加如下信息并放在[host...]内容的最上面，因为上下顺序代表了优先级:
+````toml
+server = "https://docker.io"
+# 从docker.io下载镜像时先看看私有仓库汇总有没有镜像如果没有再从Docker仓库拉取
+# 添加的内容开始
+[host."http:192.168.0.50:32000"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+# 添加内容结束
+  
+[host."https://registry-1.docker.io"]
+  capabilities = ["pull", "resolve"]
+````
+单独配置192.168.0.50:32000仓库信息
+````shell
+sudo mkdir /etc/containerd/certs.d/192.168.0.50:32000/
+sudo vi /etc/containerd/certs.d/192.168.0.50:32000/hosts.toml
+````
+添加如下信息：
+````toml
+# 对私有仓库单独配置不走_default配置，其实走_default效果都一样，这样就是显式声明而已
+server = "http:192.168.0.50:32000"
+
+[host."http:192.168.0.50:32000"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+````
+
+````shell
+# 完成配置之后重启 microk8s
+sudo microk8s stop
+sudo microk8s start
+
+````
+
+查看自动拉取镜像效果：
+````shell
+# 在db-home上执行
+sudo microk8s kubectl get pods -A
+````
+
+加入MicroK8s集群：
+````shell
+# 在db-home上执行，加入MicroK8s集群，注意要增加--worker参数
 sudo microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3 --worker
+````
 
-#显示
-Contacting cluster at 192.168.0.50
-
-The node has joined the cluster and will appear in the nodes list in a few seconds.
-
-This worker node gets automatically configured with the API server endpoints.
-If the API servers are behind a loadbalancer please set the '--refresh-interval' to '0s' in:
-    /var/snap/microk8s/current/args/apiserver-proxy
-and replace the API server endpoints with the one provided by the loadbalancer in:
-    /var/snap/microk8s/current/args/traefik/provider.yaml
-
-#查看所有node节点下的pod运行情况
+在Master节点上看是否db-home的Pod都自动拉取镜像并启动好了
+````shell
+# 在Master上执行
 sudo microk8s kubectl get pods -A -o wide
-
-NAMESPACE            NAME                                         READY   STATUS     RESTARTS      AGE     IP             NODE         NOMINATED NODE   READINESS GATES
-container-registry   registry-5776c58776-mtzt6                    1/1     Running    2             5h38m   10.1.235.216   k8s-master   <none>           <none>
-ingress              nginx-ingress-microk8s-controller-589zq      1/1     Running    2             5h43m   10.1.235.211   k8s-master   <none>           <none>
-kube-system          calico-kube-controllers-796fb75cc-97tvl      1/1     Running    2             8h      10.1.235.214   k8s-master   <none>           <none>
-kube-system          calico-node-6v6g7                            1/1     Running    0             98m     192.168.0.50   k8s-master   <none>           <none>
-kube-system          calico-node-qvm65                            0/1     Init:0/2   0             97m     192.168.0.51   k8s-node1    <none>           <none>
-kube-system          coredns-5986966c54-fmg4w                     1/1     Running    2             8h      10.1.235.213   k8s-master   <none>           <none>
-kube-system          dashboard-metrics-scraper-795895d745-8bhsp   1/1     Running    2             5h47m   10.1.235.212   k8s-master   <none>           <none>
-kube-system          hostpath-provisioner-7c8bdf94b8-nmvtn        1/1     Running    3 (98m ago)   5h42m   10.1.235.217   k8s-master   <none>           <none>
-kube-system          kubernetes-dashboard-6796797fb5-r7f4k        1/1     Running    2             5h47m   10.1.235.215   k8s-master   <none>           <none>
-kube-system          metrics-server-7cff7889bd-hnrz5              1/1     Running    2             5h47m   10.1.235.210   k8s-master   <none>           <none>
-
-#方便从Master节点链接Node节点传输文件
-ssh-keygen -t rsa -b 4096 -C "sunweisheng"
-ssh-copy-id sunweisheng@192.168.0.51
-
-#从Master节点传输Node节点必要的镜像
-scp pause-3.7.tar sunweisheng@192.168.0.51:~/
-scp cni-3.25.1.tar sunweisheng@192.168.0.51:~/
-scp calico-node-3.25.1.tar sunweisheng@192.168.0.51:~/
-scp ingress-nginx-v1.11.5.tar sunweisheng@192.168.0.51:~/
-
-#在Node节点上导入镜像
-sudo microk8s ctr images import pause-3.7.tar 
-sudo microk8s ctr images import cni-3.25.1.tar
-sudo microk8s ctr images import calico-node-3.25.1.tar
-sudo microk8s ctr images import ingress-nginx-v1.11.5.tar
-
-#查看所有node节点下的pod运行情况
-sudo microk8s kubectl get pods -A -o wide
-
-#显示
-NAMESPACE            NAME                                         READY   STATUS    RESTARTS      AGE    IP             NODE         NOMINATED NODE   READINESS GATES
-container-registry   registry-5776c58776-mtzt6                    1/1     Running   3 (32m ago)   9h     10.1.235.219   k8s-master   <none>           <none>
-ingress              nginx-ingress-microk8s-controller-589zq      1/1     Running   4 (31m ago)   9h     10.1.235.225   k8s-master   <none>           <none>
-ingress              nginx-ingress-microk8s-controller-rptkg      1/1     Running   0             11m    10.1.36.65     k8s-node1    <none>           <none>
-kube-system          calico-kube-controllers-796fb75cc-97tvl      1/1     Running   3 (32m ago)   12h    10.1.235.223   k8s-master   <none>           <none>
-kube-system          calico-node-6v6g7                            1/1     Running   1 (32m ago)   5h7m   192.168.0.50   k8s-master   <none>           <none>
-kube-system          calico-node-qvm65                            1/1     Running   0             5h6m   192.168.0.51   k8s-node1    <none>           <none>
-kube-system          coredns-5986966c54-fmg4w                     1/1     Running   3 (32m ago)   12h    10.1.235.224   k8s-master   <none>           <none>
-kube-system          dashboard-metrics-scraper-795895d745-8bhsp   1/1     Running   3 (32m ago)   9h     10.1.235.222   k8s-master   <none>           <none>
-kube-system          hostpath-provisioner-7c8bdf94b8-nmvtn        1/1     Running   4 (32m ago)   9h     10.1.235.221   k8s-master   <none>           <none>
-kube-system          kubernetes-dashboard-6796797fb5-r7f4k        1/1     Running   3 (32m ago)   9h     10.1.235.220   k8s-master   <none>           <none>
-kube-system          metrics-server-7cff7889bd-hnrz5              1/1     Running   3 (32m ago)   9h     10.1.235.218   k8s-master   <none>           <none>
-
-#查看节点信息
-microk8s kubectl get nodes
-
-#显示
-NAME         STATUS   ROLES    AGE     VERSION
-k8s-master   Ready    <none>   12h     v1.30.11
-k8s-node1    Ready    <none>   5h12m   v1.30.11
 ````
 
-## 配置和查看MicroK8s的仪表盘（Dashboard）
-
+回到db-home手工拉取镜像从私有仓库并为下一步实验做准备：
 ````shell
-#创建登录Dashboard的token
-microk8s kubectl create token kubernetes-dashboard -n kube-system
-
-#显示
-eyJhbGciOiJSUzI1NiIsImtpZCI6Ilk3UHlScTZvc0J1SEh0VU85Rjh2VUs5QTdaQkdtVTZ0aFFzYUJ2aDMtb0kifQ.eyJhdWQiOlsiaHR0cHM6Ly9rdWJlcm5ldGVzLmRlZmF1bHQuc3ZjIl0sImV4cCI6MTc0NzUwMzk1OSwiaWF0IjoxNzQ3NTAwMzU5LCJpc3MiOiJodHRwczovL2t1YmVybmV0ZXMuZGVmYXVsdC5zdmMiLCJqdGkiOiJjNmQxZGUwNS0yM2EyLTQ1MTEtOTYzNy1jZTAxODNhODdkMmEiLCJrdWJlcm5ldGVzLmlvIjp7Im5hbWVzcGFjZSI6Imt1YmUtc3lzdGVtIiwic2VydmljZWFjY291bnQiOnsibmFtZSI6Imt1YmVybmV0ZXMtZGFzaGJvYXJkIiwidWlkIjoiY2MxZWU5MDctM2MwNS00ZTg4LThkMDgtOGVkMDcxNWQwMGNmIn19LCJuYmYiOjE3NDc1MDAzNTksInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDprdWJlLXN5c3RlbTprdWJlcm5ldGVzLWRhc2hib2FyZCJ9.pZGx7aG7cYIKhZjw2rboVHASMZ3gP2Z3THxSjhfTcgdTklhhkSF38x2qwhvTdQxeRwP2FhdHDjWaQpZTClzyqgmluAORQME48sbbeyMCIS4Auu9jgAZNC6BW4e-AKsvDqhu1XB4vVVVfi6BQfbpSKRUp_04R5pSa21GmzB9r_bKlqljWAv-hhogEi3cSlhGyetiT3DFeEBY5t91nwomTVILThZObdFF5xSmrEOLOX109Fm0fEJDR-M3Qzrj9exduNPMrpEZnnT9OckNevjpGVK6LDqiZM6_GeV-MGt3ss9Av4ljqHjDrnfv_RAglInYG5SZVY9b_E-jDwMyLETv-Hw
-
-#直接暴露服务（不安全，仅测试用）
-microk8s kubectl patch svc kubernetes-dashboard -n kube-system -p '{"spec": {"type": "NodePort"}}'
-
-microk8s kubectl get svc -n kube-system | grep dashboard
-
-#显示
-kubernetes-dashboard        NodePort    10.152.183.140   <none>        443:32137/TCP            9h
-
-#用浏览器直接访问，输入上面的Token即可登录成功
-https://192.168.0.50:32137/#/login
+sudo microk8s ctr images pull 192.168.0.50:32000/registry:2.8.1
+sudo sudo microk8s ctr images tag 192.168.0.50:32000/registry:2.8.1 registry:2.8.1
 ````
 
-## 开启nvidia插件
+## 将Registry插件从Master节点转移到db-home上部署
 
-在有GPU的电脑上执行（操作系统是Ubuntu桌面版本）：
-
+registry 插件默认是部署在运行 microk8s enable registry 命令的节点。因为Master节点的硬盘不大，所以将Registry插件转移到db-home上部署，因为db-home上硬盘空间够大。
+在Master节点上给db-home节点打标签：
 ````shell
-# 检查显卡驱动确认安装了NVIDIA显卡和驱动
-nvidia-smi
+# 在Master节点上执行查看节点列表和标签
+sudo microk8s kubectl get nodes --show-labels
 
-#显示
-Sun May 18 13:54:27 2025       
-+-----------------------------------------------------------------------------------------+
-| NVIDIA-SMI 550.144.03             Driver Version: 550.144.03     CUDA Version: 12.4     |
-|-----------------------------------------+------------------------+----------------------+
-| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
-| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
-|                                         |                        |               MIG M. |
-|=========================================+========================+======================|
-|   0  NVIDIA GeForce RTX 3090        Off |   00000000:65:00.0 Off |                  N/A |
-|  0%   29C    P8             22W /  390W |      26MiB /  24576MiB |      0%      Default |
-|                                         |                        |                  N/A |
-+-----------------------------------------+------------------------+----------------------+
-                                                                                         
-+-----------------------------------------------------------------------------------------+
-| Processes:                                                                              |
-|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
-|        ID   ID                                                               Usage      |
-|=========================================================================================|
-|    0   N/A  N/A      1634      G   /usr/lib/xorg/Xorg                              9MiB |
-|    0   N/A  N/A      1756      G   /usr/bin/gnome-shell                            8MiB |
-+-----------------------------------------------------------------------------------------+
+# 如果没有合适标签，给目标节点打标签（假设节点名为 db-home）
+sudo microk8s kubectl label nodes db-home registry-node=true
+
+# 修改 registry 插件的 Deployment
+sudo microk8s kubectl edit deployment -n container-registry registry
 ````
 
-````shell
-# 安装和加入集群
-sudo snap install microk8s --classic --channel=1.30/stable
-sudo microk8s join 192.168.0.50:25000/01219019dbcf7c61dc5cd098499fb7a7/5a4decc79ab3 --worker
-
-# 从Master节点复制镜像文件到GPU服务器（在Master节点执行）
-scp *.tar admin@192.168.0.15:~/tar/
-
-#导入镜像
-sudo microk8s ctr images import pause-3.7.tar 
-sudo microk8s ctr images import cni-3.25.1.tar
-sudo microk8s ctr images import calico-node-3.25.1.tar
-sudo microk8s ctr images import ingress-nginx-v1.11.5.tar
-
-# 将当前用户加入microk8s组并刷新组权限
-sudo usermod -a -G microk8s $USER
-newgrp microk8s
-
-# 启动nvidia插件（在Master节点执行）
-microk8s enable nvidia
-
-#显示
-Infer repository core for addon nvidia
-Addon core/dns is already enabled
-Addon core/helm3 is already enabled
-Checking if NVIDIA driver is already installed
-"nvidia" has been added to your repositories
-Hang tight while we grab the latest from your chart repositories...
-...Successfully got an update from the "nvidia" chart repository
-Update Complete. ⎈Happy Helming!⎈
-Deploy NVIDIA GPU operator
-Using operator GPU driver
-NAME: gpu-operator
-LAST DEPLOYED: Sun May 18 13:05:06 2025
-NAMESPACE: gpu-operator-resources
-STATUS: deployed
-REVISION: 1
-TEST SUITE: None
-Deployed NVIDIA GPU operator
-
-# 检查部署情况
-sudo microk8s kubectl get pods -A -o wide
-
-# 又是一大堆镜像下载不了
-NAMESPACE                NAME                                                          READY   STATUS             RESTARTS       AGE     IP             NODE         NOMINATED NODE   READINESS GATES
-container-registry       registry-5776c58776-mtzt6                                     1/1     Running            5 (171m ago)   29h     10.1.235.236   k8s-master   <none>           <none>
-gpu-operator-resources   gpu-operator-56b6cf869d-k7q9d                                 1/1     Running            0              87s     10.1.28.195    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-gc-5fcdc8894b-z4hlm       0/1     ErrImagePull       0              87s     10.1.28.194    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr   0/1     ImagePullBackOff   0              87s     10.1.28.196    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-worker-2t9wv              0/1     ErrImagePull       0              87s     10.1.28.197    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-worker-nwwh8              0/1     ErrImagePull       0              87s     10.1.235.242   k8s-master   <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-worker-rmqfz              0/1     ErrImagePull       0              87s     10.1.36.67     k8s-node1    <none>           <none>
-
-# 查看镜像名称（registry.k8s.io/nfd/node-feature-discovery:v0.14.2）
-sudo microk8s kubectl describe pod gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr  -n gpu-operator-resources
-#在能下载镜像的机器上下载镜像
-docker pull registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-#推送镜像到Master节点的registry私有仓库
-docker tag registry.k8s.io/nfd/node-feature-discovery:v0.14.2 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-docker push 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-#Master本地是可以使用registry插件的
-sudo microk8s ctr images pull localhost:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-sudo microk8s ctr images tag localhost:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2 registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-
-#导出tar文件
-docker save -o node-feature-discovery-v0.14.2.tar registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-#上传tar文件(传到两个服务器上)
-scp node-feature-discovery-v0.14.2.tar admin@192.168.0.15:~/tar/
-scp node-feature-discovery-v0.14.2.tar sunweisheng@192.168.0.51:~/
-#在GPU服务器（15）和Node节点（51）上都执行导入tar镜像文件命令
-sudo microk8s ctr images import node-feature-discovery-v0.14.2.tar
-````
-
-因驱动有冲突（cgroup v2 与 NVIDIA 设备权限管理不兼容，导致设备节点无法正确创建或访问），修改GPU Operator 的 ClusterPolicy，禁用符号链接验证。
-````shell
-sudo microk8s kubectl edit clusterpolicy -n gpu-operator-resources
-````
-
+在 spec.template.spec 下添加 nodeSelector：
 ````yaml
-validator:
-    #添加开始
-    driver:
-      env:
-      - name: DISABLE_DEV_CHAR_SYMLINK_CREATION
-        value: "true"
-    #添加结束
-    image: gpu-operator-validator
-    imagePullPolicy: IfNotPresent
-    plugin:
-      env:
-      - name: WITH_WORKLOAD
-        value: "false"
-    repository: nvcr.io/nvidia/cloud-native
-    version: v23.9.1
+spec:
+  template:
+    spec:
+      nodeSelector:
+        registry-node: "true"  # 匹配目标节点的标签
+      containers:
+      - name: registry
+        # ... 其他配置保持不变
 ````
-查看结果：
+修改持久化卷配置，在 spec.template.spec.containers 添加 volumeMounts，并在 spec.template.spec 添加 volumes：
+````yaml
+spec:
+  template:
+    spec:
+      containers:
+      - name: registry
+        volumeMounts:
+        - mountPath: /var/lib/registry
+          name: registry-data
+      volumes:
+      - name: registry-data
+        hostPath:
+          path: /my_data/registry/storage
+          type: DirectoryOrCreate
+````
 
 ````shell
-sudo microk8s kubectl get pods -A -o wide
+# 删除现有 Pod 以重新调度
+sudo microk8s kubectl delete pod -n container-registry --all
 
-NAMESPACE                NAME                                                          READY   STATUS      RESTARTS        AGE     IP             NODE         NOMINATED NODE   READINESS GATES
-container-registry       registry-5776c58776-mtzt6                                     1/1     Running     5 (4h49m ago)   31h     10.1.235.236   k8s-master   <none>           <none>
-gpu-operator-resources   gpu-feature-discovery-n6w4n                                   1/1     Running     0               58m     10.1.28.204    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-56b6cf869d-k7q9d                                 1/1     Running     0               118m    10.1.28.195    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-gc-5fcdc8894b-z4hlm       1/1     Running     0               118m    10.1.28.194    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr   1/1     Running     0               118m    10.1.28.196    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-worker-2t9wv              1/1     Running     0               118m    10.1.28.197    ai-home      <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-worker-nwwh8              1/1     Running     0               118m    10.1.235.242   k8s-master   <none>           <none>
-gpu-operator-resources   gpu-operator-node-feature-discovery-worker-rmqfz              1/1     Running     0               118m    10.1.36.67     k8s-node1    <none>           <none>
-gpu-operator-resources   nvidia-container-toolkit-daemonset-vr9ct                      1/1     Running     0               8m26s   10.1.28.200    ai-home      <none>           <none>
-gpu-operator-resources   nvidia-cuda-validator-vp2qj                                   0/1     Completed   0               8m12s   10.1.28.205    ai-home      <none>           <none>
-gpu-operator-resources   nvidia-dcgm-exporter-9nq7c                                    1/1     Running     0               58m     10.1.28.202    ai-home      <none>           <none>
-gpu-operator-resources   nvidia-device-plugin-daemonset-n5fht                          1/1     Running     0               58m     10.1.28.201    ai-home      <none>           <none>
-gpu-operator-resources   nvidia-operator-validator-27gpv                               1/1     Running     0               8m27s   10.1.28.203    ai-home      <none>           <none>
-ingress                  nginx-ingress-microk8s-controller-589zq                       1/1     Running     6 (4h49m ago)   31h     10.1.235.234   k8s-master   <none>           <none>
-ingress                  nginx-ingress-microk8s-controller-j2jdw                       1/1     Running     0               5h50m   10.1.28.193    ai-home      <none>           <none>
-ingress                  nginx-ingress-microk8s-controller-knpqw                       1/1     Running     1 (4h49m ago)   5h59m   10.1.36.66     k8s-node1    <none>           <none>
-kube-system              calico-kube-controllers-796fb75cc-97tvl                       1/1     Running     5 (4h49m ago)   34h     10.1.235.239   k8s-master   <none>           <none>
-kube-system              calico-node-6v6g7                                             1/1     Running     3 (4h49m ago)   27h     192.168.0.50   k8s-master   <none>           <none>
-kube-system              calico-node-79c68                                             1/1     Running     1 (4h49m ago)   5h59m   192.168.0.51   k8s-node1    <none>           <none>
-kube-system              calico-node-rs8sf                                             1/1     Running     0               6h7m    192.168.0.15   ai-home      <none>           <none>
-kube-system              coredns-5986966c54-fmg4w                                      1/1     Running     5 (4h49m ago)   34h     10.1.235.235   k8s-master   <none>           <none>
-kube-system              dashboard-metrics-scraper-795895d745-8bhsp                    1/1     Running     5 (4h49m ago)   31h     10.1.235.237   k8s-master   <none>           <none>
-kube-system              hostpath-provisioner-7c8bdf94b8-nmvtn                         1/1     Running     6 (4h49m ago)   31h     10.1.235.241   k8s-master   <none>           <none>
-kube-system              kubernetes-dashboard-6796797fb5-r7f4k                         1/1     Running     5 (4h49m ago)   31h     10.1.235.238   k8s-master   <none>           <none>
-kube-system              metrics-server-7cff7889bd-hnrz5                               1/1     Running     5 (4h49m ago)   31h     10.1.235.240   k8s-master   <none>           <none>
+# 验证是否运行在db-home节点上
+sudo microk8s kubectl get pods -n container-registry -o wide
+# 检查存储是否生效
+sudo microk8s kubectl exec -n container-registry <registry-pod-name> -- ls /var/lib/registry
 ````
+
+上述测试没问题之后，重新上传所有需要的镜像，然后修改集群内所有节点上etc/containerd/certs.d/下的镜像仓库配置文件，并逐一测试从私有仓库拉取镜像。
+至此MicroK8s的全部部署配置内容完成。

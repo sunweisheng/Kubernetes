@@ -8,4 +8,4 @@
 * [Kubernetes V1.18.2部署Dashboard V2.0](Kubernetes-182-Dashboard.md)
 * [在K8S集群中使用NGINX Ingress V1.7](Nginx-Ingress-Install.md)
 * [Kubernetes配置文件示例](Kubernetes-Configuration.md)
-* [在Ubuntu Server中部署MicroK8s-1.3版本](Ubuntu-Microk8s-13.md)
+* [在Ubuntu Server中部署MicroK8s-1.30版本](Ubuntu-Microk8s-13.md)
