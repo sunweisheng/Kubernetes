@@ -687,8 +687,8 @@ curl http://192.168.0.50:32000/v2/_catalog
     "registry",
     "registry.k8s.io/ingress-nginx/controller",
     "registry.k8s.io/metrics-server/metrics-server",
-    "registry.k8s.io/pause",
-    "registry.k8s.io/nfd/node-feature-discovery"
+    "registry.k8s.io/nfd/node-feature-discovery",
+    "registry.k8s.io/pause"
   ]
 }
 ````
@@ -699,7 +699,7 @@ docker pull 192.168.0.50:32000/busybox:1.28.4
 ````
 
 新增加一台Node服务器（服务器名称：db-home）用于测试使用Registry插件的情况，实现两个目的：
-* 部署MicroK8s时不用手工传输镜像文件，新的节点可以自动从Registry私有仓库拉新镜像完成Node节点的初始化。
+* 部署MicroK8s时不用手工传输镜像文件，新的节点可以自动从Registry私有仓库拉新镜像完成新节点的初始化。
 * 可以通过MicroK8s的Containerd（容器环境）拉取Registry私有仓库内的镜像到本地
 
 在db-home服务器上安装MicroK8s并加入现有集群中：
@@ -712,9 +712,9 @@ sudo snap install microk8s --classic --channel=1.30/stable
 sudo microk8s kubectl get pods -A
 
 NAMESPACE     NAME                                      READY   STATUS     RESTARTS   AGE
-kube-system   calico-kube-controllers-796fb75cc-lmkf9   0/1     Pending    0          74s
-kube-system   calico-node-67dcd                         0/1     Init:0/2   0          75s
-kube-system   coredns-5986966c54-26zjz                  0/1     Pending    0          74s
+kube-system   calico-kube-controllers-796fb75cc-szn46   0/1     Pending    0          3s
+kube-system   calico-node-5mtmf                         0/1     Init:0/2   0          4s
+kube-system   coredns-5986966c54-k9sj9                  0/1     Pending    0          3s
 ````
 
 在db-home上增加私有仓库设置，因为MicroK8s默认是Containerd环境，所以设置方法与Docker环境设置方式差异很大。
@@ -727,78 +727,138 @@ kube-system   coredns-5986966c54-26zjz                  0/1     Pending    0    
 # 行为：
 # 当拉取镜像（如 XXX.XXX/library/nginx）时，Containerd 先尝试 192.168.0.50:32000。
 # 如果 192.168.0.50:32000 没有该镜像，仍然会回退到原始 registry（如 XXX.XXX/library/nginx）。
-sudo mkdir /etc/containerd/certs.d/_default/
-sudo vi /etc/containerd/certs.d/_default/hosts.toml
+sudo mkdir  /var/snap/microk8s/current/args/certs.d/_default/
+sudo nano /var/snap/microk8s/current/args/certs.d/_default//hosts.toml
 ````
 添加如下信息
 ````toml
 # 非单独配置仓库先看看私有仓库汇总有没有镜像如果没有再从目标仓库拉取
-[host."http:192.168.0.50:32000"]
-  capabilities = ["pull", "resolve"]
+[host."http://192.168.0.50:32000"]
+  capabilities = ["pull", "resolve", "push"]
   skip_verify = true
 ````
 修改docker.io仓库的配置内容增加新的镜像仓库：
 ````shell
-sudo vi etc/containerd/certs.d/_default/docker.io/hosts.toml
+sudo nano /var/snap/microk8s/current/args/certs.d/docker.io/hosts.toml
 ````
 添加如下信息并放在[host...]内容的最上面，因为上下顺序代表了优先级:
 ````toml
 server = "https://docker.io"
 # 从docker.io下载镜像时先看看私有仓库汇总有没有镜像如果没有再从Docker仓库拉取
 # 添加的内容开始
-[host."http:192.168.0.50:32000"]
-  capabilities = ["pull", "resolve"]
+[host."http://192.168.0.50:32000"]
+  capabilities = ["pull", "resolve", "push"]
   skip_verify = true
 # 添加内容结束
   
-[host."https://registry-1.docker.io"]
+[host."http://registry-1.docker.io"]
   capabilities = ["pull", "resolve"]
 ````
 单独配置192.168.0.50:32000仓库信息
 ````shell
-sudo mkdir /etc/containerd/certs.d/192.168.0.50:32000/
-sudo vi /etc/containerd/certs.d/192.168.0.50:32000/hosts.toml
+sudo mkdir /var/snap/microk8s/current/args/certs.d/192.168.0.50:32000/
+sudo nano /var/snap/microk8s/current/args/certs.d/192.168.0.50:32000/hosts.toml
 ````
 添加如下信息：
 ````toml
 # 对私有仓库单独配置不走_default配置，其实走_default效果都一样，这样就是显式声明而已
-server = "http:192.168.0.50:32000"
+server = "http://192.168.0.50:32000"
 
-[host."http:192.168.0.50:32000"]
-  capabilities = ["pull", "resolve"]
+[host."http://192.168.0.50:32000"]
+  capabilities = ["pull", "resolve", "push"]
   skip_verify = true
+````
+
+都创建完文件之后目录树如下：
+````shell
+sudo tree /var/snap/microk8s/current/args/certs.d/
+/var/snap/microk8s/current/args/certs.d/
+├── 192.168.0.50:32000
+│   └── hosts.toml
+├── _default
+│   └── hosts.toml
+├── docker.io
+│   └── hosts.toml
+└── localhost:32000
+    └── hosts.toml
 ````
 
 ````shell
 # 完成配置之后重启 microk8s
 sudo microk8s stop
 sudo microk8s start
-
 ````
 
-查看自动拉取镜像效果：
+在db-home上从私有仓库手工拉取registry.k8s.io/pause:3.7镜像(没有pause镜像，Pod无法启动，业务镜像也不会被拉取(因为Pod的"基础设施"未就绪))：
+这是因为以上配置是为cri准备的（ [plugins."io.containerd.grpc.v1.cri".registry]），因此只适用于cri客户端如crictl、kubectl ,如果使用ctr测试，可以使用--hosts-dir指定配置文件
+````shell
+sudo microk8s ctr images pull --hosts-dir "/var/snap/microk8s/current/args/certs.d/" 192.168.0.50:32000/registry.k8s.io/pause:3.7
+sudo sudo microk8s ctr images tag 192.168.0.50:32000/registry.k8s.io/pause:3.7 registry.k8s.io/pause:3.7
+````
+
+其他镜像自动从私有库拉取，查看自动拉取镜像效果：
 ````shell
 # 在db-home上执行
 sudo microk8s kubectl get pods -A
+
+#显示
+NAMESPACE     NAME                                      READY   STATUS    RESTARTS   AGE
+kube-system   calico-kube-controllers-796fb75cc-szn46   1/1     Running   0          5h3m
+kube-system   calico-node-5mtmf                         1/1     Running   0          5h3m
+kube-system   coredns-5986966c54-k9sj9                  1/1     Running   0          5h3m
 ````
 
 加入MicroK8s集群：
 ````shell
 # 在db-home上执行，加入MicroK8s集群，注意要增加--worker参数
-sudo microk8s join 192.168.0.50:25000/ae8d39d69921a96f34226e3e5ad8ea9b/5a4decc79ab3 --worker
+sudo microk8s join 192.168.0.50:25000/fcea486e14652f2bd260d3a8dcba736c/5a4decc79ab3 --worker
 ````
 
 在Master节点上看是否db-home的Pod都自动拉取镜像并启动好了
 ````shell
+# nvidia插件镜像自动拉取不了手工解决
+sudo microk8s ctr images pull --hosts-dir "/var/snap/microk8s/current/args/certs.d/" 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+sudo microk8s ctr images tag 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2 registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+# ingress插件镜像自动拉取不了手工解决
+sudo microk8s ctr images pull --hosts-dir "/var/snap/microk8s/current/args/certs.d/" 192.168.0.50:32000/registry.k8s.io/ingress-nginx/controller:v1.11.5
+sudo microk8s ctr images tag 192.168.0.50:32000/registry.k8s.io/ingress-nginx/controller:v1.11.5 registry.k8s.io/ingress-nginx/controller:v1.11.5
+
 # 在Master上执行
 sudo microk8s kubectl get pods -A -o wide
+
+# 显示
+NAMESPACE                NAME                                                          READY   STATUS      RESTARTS       AGE     IP             NODE         NOMINATED NODE   READINESS GATES
+container-registry       registry-5776c58776-mtzt6                                     1/1     Running     6 (6h2m ago)   2d10h   10.1.235.248   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-feature-discovery-n6w4n                                   1/1     Running     1 (6h2m ago)   28h     10.1.28.213    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-56b6cf869d-k7q9d                                 1/1     Running     2 (6h2m ago)   29h     10.1.28.206    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-gc-5fcdc8894b-z4hlm       1/1     Running     1 (6h2m ago)   29h     10.1.28.211    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-master-7d84b856d7-kvxnr   1/1     Running     1 (6h2m ago)   29h     10.1.28.208    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-2t9wv              1/1     Running     1 (6h2m ago)   29h     10.1.28.209    ai-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-n9wpj              1/1     Running     0              26m     10.1.200.66    db-home      <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-nwwh8              1/1     Running     1 (6h2m ago)   29h     10.1.235.246   k8s-master   <none>           <none>
+gpu-operator-resources   gpu-operator-node-feature-discovery-worker-rmqfz              1/1     Running     1 (6h2m ago)   29h     10.1.36.69     k8s-node1    <none>           <none>
+gpu-operator-resources   nvidia-container-toolkit-daemonset-vr9ct                      1/1     Running     1 (6h2m ago)   27h     10.1.28.210    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-cuda-validator-s8r2r                                   0/1     Completed   0              6h1m    10.1.28.216    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-dcgm-exporter-9nq7c                                    1/1     Running     1 (6h2m ago)   28h     10.1.28.212    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-device-plugin-daemonset-n5fht                          1/1     Running     1 (6h2m ago)   28h     10.1.28.214    ai-home      <none>           <none>
+gpu-operator-resources   nvidia-operator-validator-27gpv                               1/1     Running     1 (6h2m ago)   27h     10.1.28.215    ai-home      <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-589zq                       1/1     Running     7 (6h2m ago)   2d10h   10.1.235.245   k8s-master   <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-j2jdw                       1/1     Running     1 (6h2m ago)   33h     10.1.28.207    ai-home      <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-knpqw                       1/1     Running     2 (6h2m ago)   33h     10.1.36.68     k8s-node1    <none>           <none>
+ingress                  nginx-ingress-microk8s-controller-ttg7h                       1/1     Running     0              26m     10.1.200.65    db-home      <none>           <none>
+kube-system              calico-kube-controllers-796fb75cc-97tvl                       1/1     Running     6 (6h2m ago)   2d14h   10.1.235.247   k8s-master   <none>           <none>
+kube-system              calico-node-6v6g7                                             1/1     Running     4 (6h2m ago)   2d6h    192.168.0.50   k8s-master   <none>           <none>
+kube-system              calico-node-79c68                                             1/1     Running     2 (6h2m ago)   33h     192.168.0.51   k8s-node1    <none>           <none>
+kube-system              calico-node-rs8sf                                             1/1     Running     1 (6h2m ago)   33h     192.168.0.15   ai-home      <none>           <none>
+kube-system              calico-node-shvzd                                             1/1     Running     0              26m     192.168.0.10   db-home      <none>           <none>
+kube-system              coredns-5986966c54-fmg4w                                      1/1     Running     6 (6h2m ago)   2d14h   10.1.235.249   k8s-master   <none>           <none>
+kube-system              dashboard-metrics-scraper-795895d745-8bhsp                    1/1     Running     6 (6h2m ago)   2d11h   10.1.235.243   k8s-master   <none>           <none>
+kube-system              hostpath-provisioner-7c8bdf94b8-nmvtn                         1/1     Running     7 (6h2m ago)   2d10h   10.1.235.250   k8s-master   <none>           <none>
+kube-system              kubernetes-dashboard-6796797fb5-r7f4k                         1/1     Running     6 (6h2m ago)   2d11h   10.1.235.244   k8s-master   <none>           <none>
+kube-system              metrics-server-7cff7889bd-hnrz5                               1/1     Running     6 (6h2m ago)   2d11h   10.1.235.251   k8s-master   <none>           <none>
 ````
 
-回到db-home手工拉取镜像从私有仓库并为下一步实验做准备：
-````shell
-sudo microk8s ctr images pull 192.168.0.50:32000/registry:2.8.1
-sudo sudo microk8s ctr images tag 192.168.0.50:32000/registry:2.8.1 registry:2.8.1
-````
+
 
 ## 将Registry插件从Master节点转移到db-home上部署
 
