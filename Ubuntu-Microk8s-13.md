@@ -599,7 +599,7 @@ kube-system              metrics-server-7cff7889bd-hnrz5                        
 
 ## 通过Registry仓库插件简化部署工作
 
-在上面的操作步骤中因为下载不了镜像导致一个服务器加入节点或启动插件都需要大量传输镜像文件操作，以下内容是通过Registry插件简化镜像分发工作，另外该Registry仓库也是以后部署自己开发镜像的存储仓库，可以直接在Deployment定义并简化集群内部署自己开发镜像的工作。
+在上面的操作步骤中因为下载不了镜像导致一台服务器加入节点或启动插件都需要传输大量镜像文件，以下内容是通过Registry插件简化镜像分发工作，另外该Registry仓库也是以后部署自己开发镜像的存储仓库，可以直接在Deployment中使用简化集群内部署。
 如果要让集群内所有资源都能访问则Registry插件需要改为nodePort访问方式。
 ````shell
 # 在Master上查看私有Docker仓库设置是否正确
@@ -627,7 +627,7 @@ spec:
 ````
 重启Docker。
 
-在Docker环境向私有仓库推送上面过程中下载的镜像：
+在Docker环境中向私有仓库推送上述过程中下载的镜像：
 
 ````shell
 docker tag calico/cni:v3.25.1 192.168.0.50:32000/calico/cni:v3.25.1
@@ -666,7 +666,6 @@ docker push 192.168.0.50:32000/kubernetesui/metrics-scraper:v1.0.8
 docker tag busybox:1.28.4 192.168.0.50:32000/busybox:1.28.4
 docker push 192.168.0.50:32000/busybox:1.28.4
 
-# 这个镜像前面已经传过了这次可以不推送，这里只是做个记录
 docker tag registry.k8s.io/nfd/node-feature-discovery:v0.14.2 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
 docker push 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
 #查看结果
@@ -698,10 +697,7 @@ curl http://192.168.0.50:32000/v2/_catalog
 docker pull 192.168.0.50:32000/busybox:1.28.4
 ````
 
-新增加一台Node服务器（服务器名称：db-home）用于测试使用Registry插件的情况，实现两个目的：
-* 部署MicroK8s时不用手工传输镜像文件，新的节点可以自动从Registry私有仓库拉新镜像完成新节点的初始化。
-* 可以通过MicroK8s的Containerd（容器环境）拉取Registry私有仓库内的镜像到本地
-
+新增加一台Node服务器（服务器名称：db-home）用于测试使用Registry插件的情况。
 在db-home服务器上安装MicroK8s并加入现有集群中：
 
 ````shell
@@ -718,7 +714,6 @@ kube-system   coredns-5986966c54-k9sj9                  0/1     Pending    0    
 ````
 
 在db-home上增加私有仓库设置，因为MicroK8s默认是Containerd环境，所以设置方法与Docker环境设置方式差异很大。
-
 在db-home上创建如下目录和文件内容：
 
 ````shell
@@ -728,7 +723,7 @@ kube-system   coredns-5986966c54-k9sj9                  0/1     Pending    0    
 # 当拉取镜像（如 XXX.XXX/library/nginx）时，Containerd 先尝试 192.168.0.50:32000。
 # 如果 192.168.0.50:32000 没有该镜像，仍然会回退到原始 registry（如 XXX.XXX/library/nginx）。
 sudo mkdir  /var/snap/microk8s/current/args/certs.d/_default/
-sudo nano /var/snap/microk8s/current/args/certs.d/_default//hosts.toml
+sudo nano /var/snap/microk8s/current/args/certs.d/_default/hosts.toml
 ````
 添加如下信息
 ````toml
@@ -737,6 +732,7 @@ sudo nano /var/snap/microk8s/current/args/certs.d/_default//hosts.toml
   capabilities = ["pull", "resolve", "push"]
   skip_verify = true
 ````
+
 修改docker.io仓库的配置内容增加新的镜像仓库：
 ````shell
 sudo nano /var/snap/microk8s/current/args/certs.d/docker.io/hosts.toml
@@ -751,7 +747,7 @@ server = "https://docker.io"
   skip_verify = true
 # 添加内容结束
   
-[host."http://registry-1.docker.io"]
+[host."https://registry-1.docker.io"]
   capabilities = ["pull", "resolve"]
 ````
 单独配置192.168.0.50:32000仓库信息
@@ -790,7 +786,7 @@ sudo microk8s start
 ````
 
 在db-home上从私有仓库手工拉取registry.k8s.io/pause:3.7镜像(没有pause镜像，Pod无法启动，业务镜像也不会被拉取(因为Pod的"基础设施"未就绪))：
-这是因为以上配置是为cri准备的（ [plugins."io.containerd.grpc.v1.cri".registry]），因此只适用于cri客户端如crictl、kubectl ,如果使用ctr测试，可以使用--hosts-dir指定配置文件
+这是因为以上配置是为cri准备的（[plugins."io.containerd.grpc.v1.cri".registry]），因此只适用于cri客户端如crictl、kubectl ,如果使用ctr测试，可以使用--hosts-dir指定配置文件，否则会报HTTPS错误。
 ````shell
 sudo microk8s ctr images pull --hosts-dir "/var/snap/microk8s/current/args/certs.d/" 192.168.0.50:32000/registry.k8s.io/pause:3.7
 sudo sudo microk8s ctr images tag 192.168.0.50:32000/registry.k8s.io/pause:3.7 registry.k8s.io/pause:3.7
@@ -814,7 +810,7 @@ kube-system   coredns-5986966c54-k9sj9                  1/1     Running   0     
 sudo microk8s join 192.168.0.50:25000/fcea486e14652f2bd260d3a8dcba736c/5a4decc79ab3 --worker
 ````
 
-在Master节点上看是否db-home的Pod都自动拉取镜像并启动好了
+有两个镜像还是获取不到，原因还未查明，先解决问题吧。
 ````shell
 # nvidia插件镜像自动拉取不了手工解决
 sudo microk8s ctr images pull --hosts-dir "/var/snap/microk8s/current/args/certs.d/" 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
@@ -857,8 +853,6 @@ kube-system              hostpath-provisioner-7c8bdf94b8-nmvtn                  
 kube-system              kubernetes-dashboard-6796797fb5-r7f4k                         1/1     Running     6 (6h2m ago)   2d11h   10.1.235.244   k8s-master   <none>           <none>
 kube-system              metrics-server-7cff7889bd-hnrz5                               1/1     Running     6 (6h2m ago)   2d11h   10.1.235.251   k8s-master   <none>           <none>
 ````
-
-
 
 ## 将Registry插件从Master节点转移到db-home上部署
 
