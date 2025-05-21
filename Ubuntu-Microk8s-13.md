@@ -63,7 +63,8 @@ scp pause-3.7.tar sunweisheng@192.168.0.50:~/
 ````
 
 ## 在master节点上导入tar文件
-
+如果服务器不是x86_64架构，比如Mac处理器芯片（arm64）的电脑就要用uname -m命令查一下（包括运行虚拟机的电脑），并在导入命令后面加上--platform linux/arm64，否则会报类似ctr: content digest sha256:be47ea44f3699337ec9aced948758293f76336bba0900d383623d85c4a88e2d4: not found这样的错误。
+非x86_64架构的电脑导入tar文件的命令例子是：sudo microk8s ctr images import pause-3.7.tar --platform linux/arm64
 ````shell
 #导入registry.k8s.io/pause:3.7
 sudo microk8s ctr images import pause-3.7.tar
