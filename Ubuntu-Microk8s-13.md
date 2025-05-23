@@ -629,16 +629,18 @@ spec:
 重启Docker。
 
 在Docker环境中向私有仓库推送上述过程中下载的镜像：
-
+同样如果不是X86架构的电脑需要在push命令最后面加上--platform linux/arm64参数。
 ````shell
 docker tag calico/cni:v3.25.1 192.168.0.50:32000/calico/cni:v3.25.1
 docker push 192.168.0.50:32000/calico/cni:v3.25.1
 
-docker tag registry.k8s.io/pause:3.7 192.168.0.50:32000/registry.k8s.io/pause:3.7
-docker push 192.168.0.50:32000/registry.k8s.io/pause:3.7
+# 导入到私有仓库需要把registry.k8s.io/原本的仓库域名删除否则镜像的Tag就错了，因为本身就要上私有仓库域名
+docker tag registry.k8s.io/pause:3.7 192.168.0.50:32000/pause:3.7
+docker push 192.168.0.50:32000/pause:3.7
 
-docker tag registry.k8s.io/ingress-nginx/controller:v1.11.5 192.168.0.50:32000/registry.k8s.io/ingress-nginx/controller:v1.11.5
-docker push 192.168.0.50:32000/registry.k8s.io/ingress-nginx/controller:v1.11.5
+# 导入到私有仓库需要把registry.k8s.io/原本的仓库域名删除否则镜像的Tag就错了，因为本身就要上私有仓库域名
+docker tag registry.k8s.io/ingress-nginx/controller:v1.11.5 192.168.0.50:32000/ingress-nginx/controller:v1.11.5
+docker push 192.168.0.50:32000/ingress-nginx/controller:v1.11.5
 
 docker tag cdkbot/hostpath-provisioner:1.5.0 192.168.0.50:32000/cdkbot/hostpath-provisioner:1.5.0
 docker push 192.168.0.50:32000/cdkbot/hostpath-provisioner:1.5.0
@@ -652,8 +654,9 @@ docker push 192.168.0.50:32000/calico/kube-controllers:v3.25.1
 docker tag calico/node:v3.25.1 192.168.0.50:32000/calico/node:v3.25.1
 docker push 192.168.0.50:32000/calico/node:v3.25.1
 
-docker tag registry.k8s.io/metrics-server/metrics-server:v0.6.3 192.168.0.50:32000/registry.k8s.io/metrics-server/metrics-server:v0.6.3
-docker push 192.168.0.50:32000/registry.k8s.io/metrics-server/metrics-server:v0.6.3
+# 导入到私有仓库需要把registry.k8s.io/原本的仓库域名删除否则镜像的Tag就错了，因为本身就要上私有仓库域名
+docker tag registry.k8s.io/metrics-server/metrics-server:v0.6.3 192.168.0.50:32000/metrics-server/metrics-server:v0.6.3
+docker push 192.168.0.50:32000/metrics-server/metrics-server:v0.6.3
 
 docker tag coredns/coredns:1.10.1 192.168.0.50:32000/coredns/coredns:1.10.1
 docker push 192.168.0.50:32000/coredns/coredns:1.10.1
@@ -667,8 +670,9 @@ docker push 192.168.0.50:32000/kubernetesui/metrics-scraper:v1.0.8
 docker tag busybox:1.28.4 192.168.0.50:32000/busybox:1.28.4
 docker push 192.168.0.50:32000/busybox:1.28.4
 
-docker tag registry.k8s.io/nfd/node-feature-discovery:v0.14.2 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-docker push 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
+# 导入到私有仓库需要把registry.k8s.io/原本的仓库域名删除否则镜像的Tag就错了，因为本身就要上私有仓库域名
+docker tag registry.k8s.io/nfd/node-feature-discovery:v0.14.2 192.168.0.50:32000/nfd/node-feature-discovery:v0.14.2
+docker push 192.168.0.50:32000/nfd/node-feature-discovery:v0.14.2
 #查看结果
 curl http://192.168.0.50:32000/v2/_catalog
 ````
@@ -685,10 +689,10 @@ curl http://192.168.0.50:32000/v2/_catalog
     "kubernetesui/dashboard",
     "kubernetesui/metrics-scraper",
     "registry",
-    "registry.k8s.io/ingress-nginx/controller",
-    "registry.k8s.io/metrics-server/metrics-server",
-    "registry.k8s.io/nfd/node-feature-discovery",
-    "registry.k8s.io/pause"
+    "ingress-nginx/controller",
+    "metrics-server/metrics-server",
+    "nfd/node-feature-discovery",
+    "pause"
   ]
 }
 ````
@@ -716,7 +720,6 @@ kube-system   coredns-5986966c54-k9sj9                  0/1     Pending    0    
 
 在db-home上增加私有仓库设置，因为MicroK8s默认是Containerd环境，所以设置方法与Docker环境设置方式差异很大。
 在db-home上创建如下目录和文件内容：
-
 ````shell
 # 配置所有未单独配置的Registry的默认镜像仓库。
 # 默认的镜像仓库镜像（Registry Mirror），使得所有拉取镜像的请求都会被重定向到指定的镜像仓库。
@@ -781,19 +784,24 @@ sudo tree /var/snap/microk8s/current/args/certs.d/
 ````
 
 ````shell
-# 完成配置之后重启 microk8s
+# 完成配置之后重启 microk8s （其实正常的话不重新启动服务也可以生效）
 sudo microk8s stop
 sudo microk8s start
 ````
 
-在db-home上从私有仓库手工拉取registry.k8s.io/pause:3.7镜像(没有pause镜像，Pod无法启动，业务镜像也不会被拉取(因为Pod的"基础设施"未就绪))：
-这是因为以上配置是为cri准备的（[plugins."io.containerd.grpc.v1.cri".registry]），因此只适用于cri客户端如crictl、kubectl ,如果使用ctr测试，可以使用--hosts-dir指定配置文件，否则会报HTTPS错误。
+注意：如果你要手工从私有仓库拉取镜像就会报错，因为以上配置是为cri准备的（[plugins."io.containerd.grpc.v1.cri".registry]），因此只适用于cri客户端如crictl、kubectl ,如果使用ctr拉取镜像，需要使用--hosts-dir指定配置文件，否则会报HTTPS错误，比如：
 ````shell
 sudo microk8s ctr images pull --hosts-dir "/var/snap/microk8s/current/args/certs.d/" 192.168.0.50:32000/registry.k8s.io/pause:3.7
 sudo sudo microk8s ctr images tag 192.168.0.50:32000/registry.k8s.io/pause:3.7 registry.k8s.io/pause:3.7
 ````
 
-其他镜像自动从私有库拉取，查看自动拉取镜像效果：
+如果发现还是拉取不了镜像文件，执行以下指令看看私有仓库请求日志分析问题出在哪里？
+````shell
+# 查看registry的Pod日志查看问题原因
+sudo microk8s kubectl logs -f registry-5776c58776-qkhwn -n container-registry
+````
+
+如果都配置正确则其他镜像会自动从私有库拉取，查看自动拉取镜像效果：
 ````shell
 # 在db-home上执行
 sudo microk8s kubectl get pods -A
@@ -811,15 +819,7 @@ kube-system   coredns-5986966c54-k9sj9                  1/1     Running   0     
 sudo microk8s join 192.168.0.50:25000/fcea486e14652f2bd260d3a8dcba736c/5a4decc79ab3 --worker
 ````
 
-有两个镜像还是获取不到，原因还未查明，先解决问题吧。
 ````shell
-# nvidia插件镜像自动拉取不了手工解决
-sudo microk8s ctr images pull --hosts-dir "/var/snap/microk8s/current/args/certs.d/" 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-sudo microk8s ctr images tag 192.168.0.50:32000/registry.k8s.io/nfd/node-feature-discovery:v0.14.2 registry.k8s.io/nfd/node-feature-discovery:v0.14.2
-# ingress插件镜像自动拉取不了手工解决
-sudo microk8s ctr images pull --hosts-dir "/var/snap/microk8s/current/args/certs.d/" 192.168.0.50:32000/registry.k8s.io/ingress-nginx/controller:v1.11.5
-sudo microk8s ctr images tag 192.168.0.50:32000/registry.k8s.io/ingress-nginx/controller:v1.11.5 registry.k8s.io/ingress-nginx/controller:v1.11.5
-
 # 在Master上执行
 sudo microk8s kubectl get pods -A -o wide
 
