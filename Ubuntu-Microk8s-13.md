@@ -854,4 +854,92 @@ kube-system              hostpath-provisioner-7c8bdf94b8-nmvtn                  
 kube-system              kubernetes-dashboard-6796797fb5-r7f4k                         1/1     Running     6 (6h2m ago)   2d11h   10.1.235.244   k8s-master   <none>           <none>
 kube-system              metrics-server-7cff7889bd-hnrz5                               1/1     Running     6 (6h2m ago)   2d11h   10.1.235.251   k8s-master   <none>           <none>
 ````
+## 删除Registry仓库中的镜像
+
+有几个镜像文件在试验过程中传输错误了，我要从Registry仓库中删除，先找到哪些镜像要删除：
+````shell
+# 查询所有镜像名称
+curl http://192.168.0.50:32000/v2/_catalog
+````
+
+````json
+{
+  "repositories": [
+    "busybox",
+    "calico/cni",
+    "calico/kube-controllers",
+    "calico/node",
+    "cdkbot/hostpath-provisioner",
+    "coredns/coredns",
+    "ingress-nginx/controller",
+    "kubernetesui/dashboard",
+    "kubernetesui/metrics-scraper",
+    "metrics-server/metrics-server",
+    "nfd/node-feature-discovery",
+    "pause",
+    "registry",
+    "registry.k8s.io/ingress-nginx/controller",
+    "registry.k8s.io/metrics-server/metrics-server",
+    "registry.k8s.io/nfd/node-feature-discovery",
+    "registry.k8s.io/pause"
+  ]
+}
+````
+其中registry.k8s.io/ingress-nginx/controller、registry.k8s.io/metrics-server/metrics-server、registry.k8s.io/nfd/node-feature-discovery、registry.k8s.io/pause，这4个是要删除的。
+
+````shell
+# 查询这些镜像的Tag
+curl http://192.168.0.50:32000/v2/registry.k8s.io/pause/tags/list
+````
+
+````json
+{"name":"registry.k8s.io/pause","tags":["3.7"]}
+````
+
+````shell
+# 找到要删除镜像的Docker-Content-Digest:
+curl -sI -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+  http://192.168.0.50:32000/v2/registry.k8s.io/pause/manifests/3.7
+
+# 显示Docker-Content-Digest: sha256:445a99db22e9add9bfb15ddb1980861a329e5dff5c88d7eec9cbf08b6b2f4eb1
+HTTP/1.1 200 OK
+Content-Length: 526
+Content-Type: application/vnd.docker.distribution.manifest.v2+json
+Docker-Content-Digest: sha256:445a99db22e9add9bfb15ddb1980861a329e5dff5c88d7eec9cbf08b6b2f4eb1
+Docker-Distribution-Api-Version: registry/2.0
+Etag: "sha256:445a99db22e9add9bfb15ddb1980861a329e5dff5c88d7eec9cbf08b6b2f4eb1"
+X-Content-Type-Options: nosniff
+Date: Fri, 30 May 2025 16:15:16 GMT
+
+# 执行删除
+curl -X DELETE -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+  http://192.168.0.50:32000/v2/registry.k8s.io/pause/manifests/sha256:445a99db22e9add9bfb15ddb1980861a329e5dff5c88d7eec9cbf08b6b2f4eb1
+  
+# 检查结果
+curl http://192.168.0.50:32000/v2/registry.k8s.io/pause/tags/list
+````
+
+````json
+{"name":"registry.k8s.io/pause","tags":null}
+````
+虽然curl -X DELETE.....这个操作会“断开”tag 和 manifest 的关联，但 并不会立即删除物理文件 。只有运行垃圾回收后，这些无引用的数据才会被真正删除。
+需要手工运行Garbage Collect，其作用是：
+- 扫描所有 blobs 和 manifests（查找没有被任何 tag 引用的内容）
+- 删除孤立的 layers 和 configs（释放磁盘空间）
+- 不影响当前正在使用的镜像（只删无引用内容）
+````shell
+sudo microk8s kubectl get pods -n container-registry
+
+# 显示
+NAME                        READY   STATUS    RESTARTS      AGE
+registry-5776c58776-6rt4r   1/1     Running   3 (59m ago)   9d
+
+# 进入pod
+sudo microk8s kubectl exec -it -n container-registry registry-5776c58776-6rt4r -- sh
+
+# 手工执行Garbage Collect
+registry garbage-collect /etc/docker/registry/config.yml
+````
+实际物理文件存放路径是sudo ls /var/snap/microk8s/common/default-storage/container-registry-registry-claim-pvc-6413eaeb-7f60-4ef2-b53f-2584f8e26cc4/docker/registry/v2/repositories，其中container-registry-registry-claim-pvc-6413eaeb-7f60-4ef2-b53f-2584f8e26cc4是随机生成的名称需要根据实际情况而改变。
+
 至此MicroK8s的全部部署配置内容完成。
