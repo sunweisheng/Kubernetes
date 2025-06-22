@@ -62,9 +62,9 @@ sudo nano /etc/systemd/system/docker.service.d/http-proxy.conf
 
 ````
 [Service]
-Environment="HTTP_PROXY=http://192.168.0.20:7890"
-Environment="HTTPS_PROXY=http://192.168.0.20:7890"
-Environment="NO_PROXY=localhost,127.0.0.1,.cluster.local,.internal"
+Environment="HTTP_PROXY=http://192.168.0.10:7897"
+Environment="HTTPS_PROXY=http://192.168.0.10:7897"
+Environment="NO_PROXY=localhost,127.0.0.1,::1,.local,192.168.0.0/24,docker-registry.example.com,.intra"
 ````
 
 完成上述配置之后重启容器运行时
@@ -82,9 +82,23 @@ sudo systemctl enable containerd
 配置APT代理
 ````shell
 sudo tee /etc/apt/apt.conf.d/proxy.conf <<EOF
-Acquire::http::Proxy "http://192.168.0.20:7890";
-Acquire::https::Proxy "http://192.168.0.20:7890";
+Acquire::http::Proxy "http://192.168.0.10:7897";
+Acquire::https::Proxy "http://192.168.0.10:7897";
 EOF
+````
+
+配置代理在SSH环境变量下
+````shell
+# 编辑非登录ssh环境变量
+sudo nano ~/.bashrc
+
+# 设置代理 对wget等命令有效
+export http_proxy="http://192.168.0.10:7897"
+export https_proxy="http://192.168.0.10:7897"
+export no_proxy="localhost,127.0.0.1,::1,.local,192.168.0.0/24,docker-registry.example.com,.intra"
+
+# 重新加载
+source ~/.bashrc
 ````
 
 安装K8S1.30的软件安装源
