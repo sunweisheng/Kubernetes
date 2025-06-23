@@ -10,3 +10,4 @@
 * [Kubernetes配置文件示例](Kubernetes-Configuration.md)
 * [在Ubuntu Server中部署MicroK8s-1.30版本](Ubuntu-Microk8s-13.md)
 * [Ubuntu Server安装配置Kubernetes 1.30版本](Ubunut-K8s-130.md)
+* [单独安装和使用Kubectl工具管理多个集群](Kubectl-Use.md)
