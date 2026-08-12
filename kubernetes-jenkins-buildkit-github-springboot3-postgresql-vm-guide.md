@@ -1,11 +1,11 @@
 # Kubernetes、Jenkins、BuildKit、GitHub、Spring Boot 3 与 PostgreSQL 部署攻略：虚拟机方案
 
-> 更新时间：2026-08-11  
+> 更新时间：2026-08-12  
 > 文档定位：既是可以逐步执行的实验操作手册，也是解释原理、风险、验证方法和排障思路的培训文档。  
 > 适用环境：2018 Intel Mac mini 上由 UTM 运行 RouterOS CHR，Multipass 运行三台 Ubuntu/Kubernetes 节点。  
 > 实验项目：[sunweisheng/K8S-Deploying-Java](https://github.com/sunweisheng/K8S-Deploying-Java)，默认构建分支为 `main`。  
-> 当前执行基线：Release [`v1.0.6`](https://github.com/sunweisheng/K8S-Deploying-Java/releases/tag/v1.0.6)，提交 `c14554fbdb325daeceaba6bdcf872590c271ea84`，项目位于仓库根目录；该版本已于 2026-08-11 完成真实端到端构建。  
-> 实际验证状态：虚拟机方案的 Kubernetes 平台和应用核心端到端流程已经在真实环境测试通过，包括 Jenkins、Maven、BuildKit、GHCR、Helm、Spring Boot 双副本、PostgreSQL、Traefik HTTPS Ingress 和 Headlamp。  
+> 当前正式基线：`K8S-Deploying-Java v1.0.8`，提交 `485a6e709d235e3c9b1dd0d673752a013c782d50`，项目位于仓库根目录；Tag、GitHub Release 和 JAR 已正式发布。  
+> 实际验证状态：21 个测试、JAR 构建、Rootless BuildKit 镜像与缓存推送、镜像摘要传递、Helm Revision 3、两个应用副本、PostgreSQL 17.10、HTTPS 页面和健康接口均已在本虚拟机环境通过；完整记录见第 2 节与附录 A。  
 > 配套方案：[查看云服务器方案](./kubernetes-jenkins-buildkit-github-springboot3-postgresql-cloud-server-guide.md)。
 
 ## 使用说明
@@ -96,7 +96,7 @@ flowchart TB
         platformHelm["手工执行 helm upgrade --install"]
         api1["Kubernetes API"]
         cluster["集群基础资源<br/>控制面静态 Pod、Node、kube-system 对象<br/>Calico CRD、Installation、BGPConfiguration、BGPPeer、IPPool 和网络工作负载"]
-        prereq["流水线和应用前置资源<br/>Namespace；jenkins-home/postgresql-data PV/PVC<br/>jenkins-admin、app-db、GHCR、TLS Secret；build-proxy ConfigMap<br/>jenkins-deployer 与 headlamp-admin 的身份和授权"]
+        prereq["流水线和应用前置资源<br/>Namespace；jenkins-home/postgresql-data PV/PVC<br/>jenkins-admin、app-db、GHCR、TLS Secret；build-proxy ConfigMap<br/>可选 deploy-overrides ConfigMap；jenkins-deployer 与 headlamp-admin 的身份和授权"]
         platform["平台工作负载<br/>PostgreSQL、Jenkins、Traefik、Headlamp<br/>对应的 StatefulSet/Deployment、Service、Ingress 和 RBAC"]
 
         operator --> install --> api1
@@ -149,6 +149,7 @@ flowchart TB
 | --- | --- | --- | --- |
 | Kubernetes 与 Calico 基础对象 | kubeadm、Tigera Operator/Calico 清单和本文参数 | 操作者执行安装；kubeadm、kubelet、Operator 和 Calico 控制器创建或维护 | 为后续所有 Pod、Service、存储和网络提供集群基础 |
 | 前置对象 | 本文中的 YAML 和 `kubectl create` 命令 | 操作者通过 `kubectl` 创建 | Jenkins、Agent Pod、PostgreSQL 和 Spring Boot 启动前就必须存在 |
+| 环境 Helm values | 项目定义可选挂载规则；具体内容由各环境的本文步骤定义 | 虚拟机默认流程不创建；其他环境需要覆盖时由操作者创建 `ConfigMap/deploy-overrides` | Helm 容器启动时可选挂载，写了哪一项就覆盖哪一项；对象不存在时使用 Chart 默认值 |
 | 平台对象 | Jenkins、Traefik、Headlamp 官方 Chart，以及本文生成的 PostgreSQL Chart | 操作者运行 Helm；Helm 向 API 提交；Kubernetes 控制器继续创建 Pod 和 EndpointSlice | 提供持续运行的 Jenkins、数据库、入口和管理界面 |
 | 临时 Agent Pod | `K8S-Deploying-Java/ci/jenkins-agent.yaml` 与共享类库默认值 | `jenkins-json-build` 调用 `podTemplate`；Jenkins Kubernetes 插件以 `ServiceAccount/jenkins` 创建并在结束后删除 | 只在一次构建期间提供 Maven、BuildKit、Helm 和 Jenkins Agent 环境 |
 | Spring Boot 应用对象 | `K8S-Deploying-Java/deploy/charts/spring-app` | `jenkins-json-build` 组织 Helm 命令；Agent Pod 中的 Helm 以 `jenkins-deployer` 身份创建或更新 | Deployment、Service、Ingress 和运行配置在构建结束后继续运行 |
@@ -180,6 +181,7 @@ sequenceDiagram
     agent->>agent: Maven 直连 Maven Central，测试并生成 JAR
     agent->>ghcr: BuildKit 推送镜像和缓存
     ghcr-->>agent: 返回并固定镜像摘要
+    agent->>agent: 准备环境 Helm values；没有覆盖配置时生成空 values
     agent->>api: Helm 使用 jenkins-deployer 短期 Token 提交项目 Chart
     api->>app: 创建或更新 ConfigMap、Deployment、Service、Ingress 和发布记录
     api-->>agent: 等待两个应用 Pod Ready
@@ -192,7 +194,7 @@ sequenceDiagram
 
 #### Agent Pod 的定义、创建与 BuildKit 代理源码
 
-Agent Pod 不是在 Jenkins 页面中手工编写，也不是由 `jenkins-json-build` 单独决定。实际链路是：`K8S-Deploying-Java` 定义项目自己的 Pod YAML，`jenkins-json-build` 读取并替换变量，Jenkins Kubernetes 插件补入 `jnlp` 容器并调用 Kubernetes API 创建 Pod。
+Agent Pod 不是在 Jenkins 页面中手工编写，也不是由 `jenkins-json-build` 单独决定。实际链路是：`K8S-Deploying-Java` 定义包含四个容器的 Pod YAML，`jenkins-json-build` 读取并替换变量，Jenkins Kubernetes 插件为 `jnlp` 补齐动态连接参数和共享工作区，再调用 Kubernetes API 创建 Pod。
 
 ```text
 K8S-Deploying-Java 定义 Jenkinsfile、项目 JSON 和 Agent Pod YAML
@@ -201,7 +203,7 @@ K8S-Deploying-Java 定义 Jenkinsfile、项目 JSON 和 Agent Pod YAML
 jenkins-json-build v3.1.4 读取配置、合并模板并替换 ${变量}
         │
         ▼
-Jenkins Kubernetes 插件接收 podTemplate，自动补入 jnlp
+Jenkins Kubernetes 插件接收 podTemplate，为 jnlp 补齐动态连接参数和共享工作区
         │
         ▼
 Kubernetes API 创建包含 jnlp、maven、buildkit、helm 的临时 Agent Pod
@@ -224,7 +226,9 @@ jenkinsJsonBuild(configFiles: ['ci/jenkins-project.json'])
   "schemaVersion": 3,
   "extends": "java-maven-kubernetes",
   "variables": {
-    "BUILD_PROXY_CONFIG_MAP": "build-proxy"
+    "JNLP_IMAGE": "docker.io/jenkins/inbound-agent:jdk25@sha256:...",
+    "BUILD_PROXY_CONFIG_MAP": "build-proxy",
+    "HELM_OVERRIDE_CONFIG_MAP": "deploy-overrides"
   },
   "agent": {
     "type": "kubernetes",
@@ -259,13 +263,16 @@ steps.podTemplate(arguments) {
 
 这里的 `podTemplate()` 是创建临时 Agent Pod 的关键调用。共享类库负责准备参数，Jenkins Kubernetes 插件使用 `ServiceAccount/jenkins` 调用 Kubernetes API；构建结束后，插件再删除这个 Pod。
 
-##### 2. 为什么项目 YAML 只有三个容器，运行时却有四个
+##### 2. 四个容器分别由谁定义、负责什么
 
-`K8S-Deploying-Java/ci/jenkins-agent.yaml` 显式定义三个业务容器：
+`K8S-Deploying-Java/ci/jenkins-agent.yaml` 显式定义四个容器：
 
 ```yaml
 spec:
   containers:
+    - name: jnlp
+      # 连接 Jenkins Controller，并 checkout GitHub 源码。
+
     - name: maven
       # 执行 Java 测试和打包。
 
@@ -276,24 +283,29 @@ spec:
       # 把固定镜像摘要部署到 Kubernetes。
 ```
 
-项目 YAML 没有声明 `jnlp`。Jenkins Kubernetes 插件发现模板中没有 Jenkins Agent 容器时，会自动加入 `jnlp`，使 Pod 能通过 WebSocket 连接 Jenkins Controller。未放在具体 `container(...)` 块中的源码 checkout 默认在这个 Agent 容器中执行，源码随后进入四个容器共用的 Jenkins 工作区。
+项目显式声明 `jnlp`，是为了让源码 checkout 稳定读取本环境的 `build-proxy`；镜像使用与 Jenkins 平台一致的固定摘要。Jenkins Kubernetes 插件仍负责向这个特殊容器注入本次 Agent 名称、密钥、Controller 地址和共享工作区挂载，使 Pod 通过 WebSocket 连接 Controller。未放在具体 `container(...)` 块中的 checkout 默认在 `jnlp` 中执行，源码随后进入四个容器共用的工作区。
 
-因此要区分“文件中显式定义的三个容器”和“运行时最终出现的四个容器”：
+四个容器的职责和代理边界如下：
 
 | 容器 | 谁加入 | 主要职责 | 是否读取 `build-proxy` |
 | --- | --- | --- | --- |
-| `jnlp` | Jenkins Kubernetes 插件 | 连接 Controller、checkout GitHub 源码 | 否，当前方案直连 GitHub |
+| `jnlp` | 项目 Pod YAML 定义；插件补动态连接参数 | 连接 Controller、checkout GitHub 源码 | 是，避免国内网络直连 GitHub 波动 |
 | `maven` | 项目 Pod YAML | Maven 测试、JaCoCo 和 JAR 打包 | 否，当前方案直连 Maven Central |
 | `buildkit` | 项目 Pod YAML | 拉取基础镜像、构建并推送镜像和远程缓存 | 是 |
-| `helm` | 项目 Pod YAML | 使用短期投射 Token 部署 Spring Boot | 否 |
+| `helm` | 项目 Pod YAML | 准备可选环境 values，并使用短期投射 Token 部署 Spring Boot | 否 |
 
-真实构建 `K8S-Deploying-Java/main #3` 的 Pod 日志已经同时列出 `buildkit`、`helm`、`jnlp`、`maven`，证明最终运行的是四容器 Pod。
+正式基线真实构建 `K8S-Deploying-Java/main #11` 的 Pod 日志已经同时列出 `buildkit`、`helm`、`jnlp`、`maven`，证明最终运行的是四容器 Pod。
 
-##### 3. 为什么只有 BuildKit 有代理
+##### 3. 为什么 jnlp 和 BuildKit 有代理，Maven 没有
 
-代理不是 Jenkins Controller 自动继承给整个 Pod，也没有写在 Pod 级 `env` 中。第 11 节由操作者在 `ci` 命名空间预先创建 `ConfigMap/build-proxy`，项目 JSON 再把 ConfigMap 名称放入变量 `BUILD_PROXY_CONFIG_MAP`。项目的 `ci/jenkins-agent.yaml` 只在 `buildkit` 容器中引用该变量：
+代理不是 Jenkins Controller 自动继承给整个 Pod，也没有写在 Pod 级 `env` 中。第 11 节由操作者在 `ci` 命名空间预先创建 `ConfigMap/build-proxy`，项目 JSON 再把 ConfigMap 名称放入变量 `BUILD_PROXY_CONFIG_MAP`。项目的 `ci/jenkins-agent.yaml` 让 `jnlp` 读取整个 ConfigMap，让 `buildkit` 明确读取三个键：
 
 ```yaml
+- name: jnlp
+  envFrom:
+    - configMapRef:
+        name: ${BUILD_PROXY_CONFIG_MAP}
+
 - name: buildkit
   env:
     - name: HTTP_PROXY
@@ -317,20 +329,52 @@ spec:
 
 ```text
 ConfigMap/build-proxy
-        │ configMapKeyRef
-        ▼
-buildkit 容器的 HTTP_PROXY、HTTPS_PROXY、NO_PROXY
-        │ 子进程继承
-        ▼
-buildctl-daemonless.sh 和 buildkitd
         │
-        ├── 通过 Mac 代理从 Docker Hub 拉取基础镜像
-        └── 通过 Mac 代理向 GHCR 推送应用镜像和 buildcache
+        ├── envFrom → jnlp → 通过 Mac 代理 checkout GitHub
+        │
+        └── configMapKeyRef → buildkit → buildctl-daemonless.sh 和 buildkitd
+                                      ├── 通过 Mac 代理从 Docker Hub 拉取基础镜像
+                                      └── 通过 Mac 代理向 GHCR 推送应用镜像和 buildcache
 ```
 
-`configMapKeyRef` 没有设置 `optional: true`，因此 `build-proxy` 或其中任一键不存在时，Kubernetes 不会悄悄改为直连，而会让 `buildkit` 进入 `CreateContainerConfigError`。`jnlp`、Maven 和 Helm 没有这段 `env`，不会从该 ConfigMap 获得代理。
+`jnlp` 的 `configMapRef` 和 BuildKit 的 `configMapKeyRef` 都不是可选项，因此 `build-proxy` 不存在时 Pod 无法正常启动，其中任一代理键不存在时 BuildKit 会进入 `CreateContainerConfigError`。Maven 和 Helm 不读取该 ConfigMap；Maven 继续直连 Maven Central。
 
-##### 4. BuildKit 如何执行构建、缓存和推送
+##### 4. Helm 如何使用 Chart 默认值和可选环境 values
+
+应用的默认域名和 TLS Secret 由 `K8S-Deploying-Java/deploy/charts/spring-app/values.yaml` 定义：
+
+```yaml
+ingress:
+  host: app.k8s.lab
+  tlsSecret: k8s-lab-tls
+```
+
+项目 Agent YAML 只给 Helm 容器挂载可选的 `ConfigMap/deploy-overrides`。`optional: true` 表示 ConfigMap 不存在时 Pod 仍能正常创建：
+
+```yaml
+- name: helm-overrides
+  configMap:
+    name: deploy-overrides
+    optional: true
+```
+
+部署阶段先运行项目中的 `ci/prepare-helm-values.sh`：挂载目录中存在 `values.yaml` 时复制它，不存在时生成内容为 `{}` 的空文件。随后 `ci/jenkins-project.json` 通过共享类库已经支持的 `valuesFiles` 把这份文件交给 `lint`、`template` 和 `upgrade`：
+
+```json
+{
+  "type": "helm",
+  "action": "upgrade",
+  "valuesFiles": ["${HELM_OVERRIDE_VALUES_FILE}"],
+  "setValues": {
+    "image.repository": "${IMAGE_REPOSITORY}",
+    "image.digest": "${IMAGE_DIGEST}"
+  }
+}
+```
+
+因此合并顺序是“Chart 默认值 → 可选环境 values → 本次构建的镜像仓库和摘要”。环境 values 只写 `ingress.host` 时只替换域名，只写 `ingress.tlsSecret` 时只替换 TLS Secret，两者不要求同时出现。镜像仓库和经过校验的摘要最后由流水线强制覆盖，环境 ConfigMap 不能改变本次构建要部署的镜像。虚拟机默认流程不创建 `deploy-overrides`，正好直接使用 Chart 中的 `app.k8s.lab` 和 `k8s-lab-tls`。
+
+##### 5. BuildKit 如何执行构建、缓存和推送
 
 这里先说明 BuildKit 阶段实际完成什么；JSON 如何选择处理方法、每个字段如何变成命令参数，以及真实构建最终执行的完整命令，见文档末尾“附录 D.3 BuildKit 阶段 JSON 如何转成执行命令”。
 
@@ -370,13 +414,14 @@ String digest = ImageReference.requireDigest(parsed[metadataKey]?.toString())
 
 代理只解决“网络请求经过哪里”。GHCR 登录由另一个对象 `Secret/ghcr-push-config` 解决：项目 YAML 把它挂载为 BuildKit 的 Docker `config.json`，并通过 `DOCKER_CONFIG` 指向挂载目录。两者不能互相替代：`build-proxy` 负责连接路径，`ghcr-push-config` 负责 Registry 身份认证。
 
-还要区分节点的 containerd 代理：containerd 代理负责在 Pod 启动前拉取 `maven`、`buildkit`、`helm`、`jnlp` 等容器镜像；这里的 `build-proxy` 负责 Pod 启动后 BuildKit 自己拉取 Dockerfile 基础镜像、读写缓存和推送最终镜像。
+还要区分节点的 containerd 代理：containerd 代理负责在 Pod 启动前拉取 `maven`、`buildkit`、`helm`、`jnlp` 等容器镜像；这里的 `build-proxy` 负责 Pod 启动后 `jnlp` checkout GitHub，以及 BuildKit 拉取 Dockerfile 基础镜像、读写缓存和推送最终镜像。
 
 对应源码可以在固定版本中查看：
 
-- [`K8S-Deploying-Java v1.0.6 / Jenkinsfile`](https://github.com/sunweisheng/K8S-Deploying-Java/blob/v1.0.6/Jenkinsfile)
-- [`K8S-Deploying-Java v1.0.6 / ci/jenkins-project.json`](https://github.com/sunweisheng/K8S-Deploying-Java/blob/v1.0.6/ci/jenkins-project.json)
-- [`K8S-Deploying-Java v1.0.6 / ci/jenkins-agent.yaml`](https://github.com/sunweisheng/K8S-Deploying-Java/blob/v1.0.6/ci/jenkins-agent.yaml)
+- [`K8S-Deploying-Java v1.0.8 / Jenkinsfile`](https://github.com/sunweisheng/K8S-Deploying-Java/blob/v1.0.8/Jenkinsfile)
+- [`K8S-Deploying-Java v1.0.8 / ci/jenkins-project.json`](https://github.com/sunweisheng/K8S-Deploying-Java/blob/v1.0.8/ci/jenkins-project.json)
+- [`K8S-Deploying-Java v1.0.8 / ci/jenkins-agent.yaml`](https://github.com/sunweisheng/K8S-Deploying-Java/blob/v1.0.8/ci/jenkins-agent.yaml)
+- [`K8S-Deploying-Java v1.0.8 / ci/prepare-helm-values.sh`](https://github.com/sunweisheng/K8S-Deploying-Java/blob/v1.0.8/ci/prepare-helm-values.sh)
 - [`jenkins-json-build v3.1.4 / V3Pipeline.groovy`](https://github.com/sunweisheng/jenkins-json-build/blob/v3.1.4/shared-library/src/com/bluersw/jenkins/libraries/v3/V3Pipeline.groovy)
 - [`jenkins-json-build v3.1.4 / java-maven-kubernetes.json`](https://github.com/sunweisheng/jenkins-json-build/blob/v3.1.4/shared-library/resources/com/bluersw/jenkins/libraries/v3/templates/java-maven-kubernetes.json)
 
@@ -1394,7 +1439,7 @@ kubectl get bgpconfigurations.crd.projectcalico.org,bgppeers.crd.projectcalico.o
 
 当前三节点实验应自动出现三个 `established` Session；以后节点增删时，Session 数量应随 Calico 节点数量变化。动态 Session 带有 `D` 标志属于正常现象。BGP 路由应只落在 `10.244.0.0/16` 内。
 
-第二部分中，Jenkins Controller Pod 通过 Mac 的 `192.168.0.5:7890` 代理扫描 GitHub 并读取 Jenkinsfile，BuildKit 通过该代理访问 Docker Hub 和 GHCR。Agent Pod 内的 `jnlp` 直接从 GitHub checkout 完整源码，Maven 直接访问 Maven Central。`real-lan-no-nat` 会让 Controller 和 BuildKit 的代理连接保留 `10.244.0.0/16` 中的 Pod 源地址，因此 Mac 必须把返回 Pod 网段的数据交给已经学习 Calico 路由的 CHR `192.168.0.2`。这条路由不是直接访问应用 Pod 时才需要的可选项，而是本虚拟机方案使用 Pod 内 Mac 代理的必需条件。
+第二部分中，Jenkins Controller Pod 和 Agent Pod 的 `jnlp` 通过 Mac 的 `192.168.0.5:7890` 代理访问 GitHub，BuildKit 通过该代理访问 Docker Hub 和 GHCR；Maven 直接访问 Maven Central。`real-lan-no-nat` 会让这些代理连接保留 `10.244.0.0/16` 中的 Pod 源地址，因此 Mac 必须把返回 Pod 网段的数据交给已经学习 Calico 路由的 CHR `192.168.0.2`。这条路由不是直接访问应用 Pod 时才需要的可选项，而是本虚拟机方案使用 Pod 内 Mac 代理的必需条件。
 
 **执行位置：Mac 终端。** 下面整段可以一起执行；已有正确路由时只显示提示，不会重复添加：
 
@@ -1410,7 +1455,7 @@ route -n get 10.244.0.1 | awk '/gateway:|interface:/ {print}'
 
 最后必须显示 `gateway: 192.168.0.2` 和实际桥接接口。macOS 重启后这条临时路由会消失，每次重新开始实验都要检查。
 
-**现在不要删除这条路由。** 只要 Jenkins Controller 仍通过 Mac 的 `192.168.0.5:7890` 代理访问 GitHub，或者 BuildKit 仍通过该代理访问 Docker Hub 和 GHCR，Mac 就需要用它把响应数据送回 Pod。提前删除后，Pod 发出的连接请求可能到达 Mac，但 Mac 的响应会交给家庭默认网关而不是 CHR，最终表现为 Jenkins 仓库扫描或 BuildKit 拉取、推送超时。`jnlp` 和 Maven 直连外网，不依赖这条代理返回路径。
+**现在不要删除这条路由。** 只要 Jenkins Controller 或 `jnlp` 仍通过 Mac 的 `192.168.0.5:7890` 代理访问 GitHub，或者 BuildKit 仍通过该代理访问 Docker Hub 和 GHCR，Mac 就需要用它把响应数据送回 Pod。提前删除后，Pod 发出的连接请求可能到达 Mac，但 Mac 的响应会交给家庭默认网关而不是 CHR，最终表现为 Jenkins 仓库扫描、源码 checkout 或 BuildKit 拉取推送超时。Maven 直连外网，不依赖这条代理返回路径。
 
 只有在以下任一条件成立时才可以删除：本次 Kubernetes 实验已经结束并准备删除虚拟机；或者已经取消 Pod 对 Mac 代理的依赖，并确认不再需要从 Mac 直接访问 Pod 网段。删除操作不会修改 CHR 或 Kubernetes，只删除 Mac 当前路由表中的一条临时路由。
 
@@ -1437,17 +1482,17 @@ Mac 使用 Wi-Fi 时桥接可能受无线网卡或接入点限制；出现桥接
 
 ### 2. 当前执行基线与验证范围
 
-本次顺序操作固定使用 `jenkins-json-build v3.1.4`、实验项目 `v1.0.6` 和仓库根目录中的 `Jenkinsfile`。不要引用 `master`、功能分支或临时提交，也不要改回旧 `k8sCluster`、Docker Socket 或特权容器方案。
+本次顺序操作固定使用 `jenkins-json-build v3.1.4`、实验项目 `v1.0.8` 和仓库根目录中的 `Jenkinsfile`。不要引用 `master`、功能分支或临时提交，也不要改回旧 `k8sCluster`、Docker Socket 或特权容器方案。
 
 当前验证范围必须分开记录：
 
-- `v1.0.5` 已在本虚拟机环境完成真实端到端流水线，BuildKit 推送镜像和缓存、Helm 按摘要部署、两个应用副本、PostgreSQL 连接和健康检查均已通过。
-- `v1.0.6` 已在 2026-08-11 由 Jenkins `K8S-Deploying-Java/main #3` 完成真实端到端流水线并以 `SUCCESS` 结束：从固定提交读取根目录 `Jenkinsfile`，加载 `jenkins-json-build v3.1.4`，14 个 Maven 测试和打包通过，BuildKit 推送镜像及远程缓存，校验 `sha256` 摘要后由 Helm 完成部署。
-- 流水线结束后的只读复查确认三个 Node 为 `Ready`，Traefik 和 Spring Boot 均为两个 Ready 副本，Jenkins 与 PostgreSQL NFS PV/PVC 为 `Bound`，五个 Helm Release 均为 `deployed`，Spring Boot 按镜像摘要运行、能连接 PostgreSQL，三个 HTTPS 入口均返回 `200`，应用健康状态为 `UP`。
-- 本次复查没有删除 Jenkins Controller 或 PostgreSQL Pod，也没有从命令行重复页面的完整新增、修改、删除和分页操作；这两项仍按第 16.3、16.4 节在每次新环境实验中单独确认，不能只由本次只读复查代替。
+- `v1.0.8` 不再要求 Jenkins Controller 提供应用域名和 TLS Secret。虚拟机不创建 `ConfigMap/deploy-overrides` 时，Helm 直接使用 Chart 默认的 `app.k8s.lab` 和 `k8s-lab-tls`。
+- 21 个 Maven 测试、JAR 构建、Helm lint 和四种 Ingress values 组合的模板渲染已经通过；正式基线的真实 Jenkins、BuildKit、GHCR、Helm 和应用运行结果已由 `main #11` 验证，每次重建环境仍要按第 16 节重新检查。
+- 流水线结束后要确认三个 Node 为 `Ready`，Traefik 和 Spring Boot 均为两个 Ready 副本，Jenkins 与 PostgreSQL NFS PV/PVC 为 `Bound`，五个 Helm Release 均为 `deployed`，Spring Boot 按镜像摘要运行、能连接 PostgreSQL，三个 HTTPS 入口均返回 `200`，应用健康状态为 `UP`。
+- 会中断服务的 Jenkins Controller 和 PostgreSQL Pod 重建，以及页面完整新增、修改、删除和分页操作，仍按第 16.3、16.4 节在每次新环境实验中单独确认，不能只由只读复查代替。
 - `jenkins-json-build v3.1.4` 是当前修复后的共享类库基线；旧版本故障经过和一次性补救命令统一放在附录 A。
 
-执行时只需要记住：`jnlp` 负责 checkout GitHub 源码，Maven 直连 Maven Central，只有 BuildKit 通过 `build-proxy` 访问镜像仓库；Registry 凭据只挂载给 BuildKit，短期 Kubernetes Token 只挂载给 Helm。详细版本审计、旧版错误和验证证据见附录 A；运行时报错见附录 B。
+执行时只需要记住：`jnlp` 通过 `build-proxy` checkout GitHub 源码，Maven 直连 Maven Central，BuildKit 通过同一 ConfigMap 访问镜像仓库；Registry 凭据只挂载给 BuildKit，短期 Kubernetes Token 只挂载给 Helm。详细版本审计、旧版错误和验证证据见附录 A；运行时报错见附录 B。
 
 ### 3. 已核对的软件和镜像
 
@@ -1500,6 +1545,7 @@ export INGRESS_HTTPS_NODE_PORT=30443
 export JENKINS_HOST=jenkins.k8s.lab
 export APP_HOST=app.k8s.lab
 export HEADLAMP_HOST=headlamp.k8s.lab
+export TLS_SECRET_NAME=k8s-lab-tls
 
 # 本次已核对的 Mac en0 局域网地址；不能填 127.0.0.1
 export PROXY_HOST=192.168.0.5
@@ -2289,7 +2335,7 @@ controller:
     pathType: Prefix
     hostName: ${JENKINS_HOST}
     tls:
-      - secretName: k8s-lab-tls
+      - secretName: ${TLS_SECRET_NAME}
         hosts:
           - ${JENKINS_HOST}
 
@@ -2344,7 +2390,6 @@ controller:
       value: http://${PROXY_HOST}:${PROXY_PORT}
     - name: NO_PROXY
       value: 127.0.0.1,localhost,192.168.0.0/24,10.244.0.0/16,10.96.0.0/12,.k8s.lab,.svc,.svc.cluster.local,kubernetes.default.svc
-
 agent:
   enabled: true
   namespace: ${CI_NAMESPACE}
@@ -2439,7 +2484,8 @@ Jenkins 在 Kubernetes 中创建临时 Agent Pod，需要同时具备“连接�
 - `rbac.readSecrets: false`：不给 Controller 读取 Kubernetes Secret 的权限。
 - `agent.namespace: ci`、`agent.jenkinsUrl` 和 `agent.websocket: true`：Agent Pod 创建在 `ci`，并通过集群内 Service 和 WebSocket 连接 Jenkins。
 - `agent.restrictedPssSecurityContext: true`：Kubernetes 插件给所有 Agent 容器补 `runAsNonRoot: true`、禁止提权、删除 capabilities 和 `RuntimeDefault` seccomp；它不会自动选择数字 UID/GID。
-- `agent.runAsUser/runAsGroup: 1000`：让 Chart 自带的默认 PodTemplate 使用数字身份。项目流水线通过 `podTemplate(yaml: ...)` 创建动态 Pod，不可靠继承该默认模板，因此固定项目 `v1.0.6` 还在自己的 Pod YAML 中设置 Pod 级数字 UID/GID 和 `fsGroup`。
+- `agent.runAsUser/runAsGroup: 1000`：让 Chart 自带的默认 PodTemplate 使用数字身份。项目流水线通过 `podTemplate(yaml: ...)` 创建动态 Pod，不可靠继承该默认模板，因此固定项目 `v1.0.8` 还在自己的 Pod YAML 中设置 Pod 级数字 UID/GID 和 `fsGroup`。
+- `controller.containerEnv`：只保存 Jenkins Controller 自己访问外部服务需要的代理变量，不再保存应用域名或 TLS Secret。应用部署差异属于目标 Kubernetes 环境，由第 11 节的可选 `ConfigMap/deploy-overrides` 提供；本虚拟机方案不创建它，直接使用 Chart 默认值。
 
 这里要区分两个配置层次：Chart 的 `agent.runAsUser/runAsGroup` 保护 Chart 默认 Agent；项目 Pod 的 `spec.securityContext` 才直接控制本次流水线。不能只在 Helm values 中增加 UID 后，就删掉项目 YAML 中的 Pod 级身份。
 
@@ -2472,7 +2518,7 @@ kubectl auth can-i get secrets \
 
 StatefulSet 查询应输出 `jenkins`；后面四条权限检查应依次输出 `yes`、`yes`、`yes`、`no`。这证明 Controller 能管理构建 Pod、读取构建日志，但不能读取 Secret。浏览器中进入 `Manage Jenkins` → `Clouds`，还应能看到自动生成的 `kubernetes`；只检查是否存在，不需要点击 `New cloud` 重建。
 
-这些检查只能证明权限和 Cloud 配置已经准备好。是否能按项目 YAML 创建 Maven、BuildKit、Helm 并由插件加入 `jnlp`，仍要由第 15 节流水线验证；最终 Pod 应有四个容器。
+这些检查只能证明权限和 Cloud 配置已经准备好。项目 YAML 中的 `jnlp`、Maven、BuildKit、Helm 能否由插件补齐连接参数并创建为一个四容器 Pod，仍要由第 15 节流水线验证。
 
 #### 9.3.2 确认 Jenkins Controller 能通过 Mac 代理读取 Git 仓库
 
@@ -2664,7 +2710,7 @@ unset TLS_DIR
 source "$HOME/k8s-platform/platform.env"
 TLS_DIR="$HOME/k8s-platform/tls"
 for namespace in "$CI_NAMESPACE" "$APP_NAMESPACE" "$HEADLAMP_NAMESPACE"; do
-  kubectl -n "$namespace" create secret tls k8s-lab-tls \
+  kubectl -n "$namespace" create secret tls "$TLS_SECRET_NAME" \
     --cert="$TLS_DIR/wildcard-k8s-lab.crt" \
     --key="$TLS_DIR/wildcard-k8s-lab.key" \
     --dry-run=client -o yaml | kubectl apply -f -
@@ -2889,7 +2935,7 @@ ingress:
         - path: /
           type: Prefix
   tls:
-    - secretName: k8s-lab-tls
+    - secretName: ${TLS_SECRET_NAME}
       hosts:
         - ${HEADLAMP_HOST}
 
@@ -3012,7 +3058,7 @@ kubectl -n "$HEADLAMP_NAMESPACE" delete secret headlamp-admin-permanent-token
 
 这一步的目的，是让 Jenkins **可以发布 Spring Boot 应用，但不能读取数据库密码等 Secret**。先记住一句话：Jenkins Controller 负责创建临时 Agent Pod，Agent Pod 里的 Helm 负责部署应用，这两项工作使用不同的 Kubernetes 身份。
 
-这里的“V3 Agent Pod”是指 `jenkins-json-build v3.1.4` 为本项目每次构建临时创建的 Pod，不是 Kubernetes 的第三个版本。项目 YAML 声明 Maven、BuildKit 和 Helm 三个容器，Jenkins Kubernetes 插件还会自动加入 `jnlp`，构建结束后整个 Pod 会被删除。
+这里的“V3 Agent Pod”是指 `jenkins-json-build v3.1.4` 为本项目每次构建临时创建的 Pod，不是 Kubernetes 的第三个版本。项目 YAML 声明 `jnlp`、Maven、BuildKit 和 Helm 四个容器，Jenkins Kubernetes 插件为 `jnlp` 补齐动态连接参数；构建结束后整个 Pod 会被删除。
 
 | Kubernetes 身份 | 在哪里使用 | 可以做什么 | 不能做什么 |
 | --- | --- | --- | --- |
@@ -3148,11 +3194,11 @@ kubectl auth can-i create namespaces \
 
 最后一条的 `--all-namespaces` 不会增加或修改任何权限。`Namespace` 本身是集群级资源，该参数只是阻止 `kubectl` 把当前命名空间附加到权限检查中。旧命令出现范围告警时，按“附录 B.1.19 旧版 RBAC 检查出现范围告警”判断。
 
-### 11. 创建 BuildKit 代理配置
+### 11. 创建 Agent 出站代理配置
 
-本实验中 GitHub 和 Maven Central 可以直接访问，因此 `jnlp` 与 Maven 不走 Mac 代理；BuildKit 访问 Docker Hub 和 GHCR 时使用代理。固定项目 `v1.0.6` 只给 BuildKit 注入 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`；Maven 不挂载自定义 `settings.xml`。
+本实验中 Maven Central 可以直连，但 GitHub 直连存在波动，Docker Hub 和 GHCR 也需要代理。固定项目 `v1.0.8` 让 `jnlp` 和 BuildKit 从 `build-proxy` 获得 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`；Maven 不读取该 ConfigMap，也不挂载自定义 `settings.xml`。
 
-**执行位置：`k8s-master`。执行方式：下面整段命令一起执行。** 命令会创建或更新 `ConfigMap/build-proxy`；Agent Pod 中只有 `buildkit` 从它读取代理变量。
+**执行位置：`k8s-master`。执行方式：下面整段命令一起执行。** 命令会创建或更新 `ConfigMap/build-proxy`；Agent Pod 中的 `jnlp` 和 `buildkit` 从它读取代理变量。
 
 ```bash
 source "$HOME/k8s-platform/platform.env"
@@ -3172,16 +3218,24 @@ kubectl -n "$CI_NAMESPACE" get configmap build-proxy
 
 1. 本节在 `ci` 命名空间创建 `ConfigMap/build-proxy`，保存 Mac 代理地址和不走代理的集群网段。
 2. 项目的 `ci/jenkins-project.json` 把 `BUILD_PROXY_CONFIG_MAP` 设置为 `build-proxy`。
-3. Jenkins 创建临时 Agent Pod 时，`buildkit` 从该 ConfigMap 读取 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`。
-4. `jnlp` 直接从 GitHub checkout 项目源码到共享工作区，`maven` 读取同一工作区并直接访问 Maven Central；这两个容器都不读取 `build-proxy`。
+3. Jenkins 创建临时 Agent Pod 时，`jnlp` 和 `buildkit` 从该 ConfigMap 读取 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`。
+4. `jnlp` 通过 Mac 代理从 GitHub checkout 项目源码到共享工作区，`maven` 读取同一工作区并直接访问 Maven Central。
 
-`build-proxy` 是 Agent Pod 的必需前置对象，因为 BuildKit 的 `configMapKeyRef` 会在容器创建前检查它；缺少时 BuildKit 会进入 `CreateContainerConfigError`。`jnlp` 和 Maven 不依赖该 ConfigMap。
+`build-proxy` 是 Agent Pod 的必需前置对象，因为 `jnlp` 的 `configMapRef` 和 BuildKit 的 `configMapKeyRef` 会在容器创建前检查它；缺少时 Agent Pod 无法正常启动。Maven 不依赖该 ConfigMap。
 
 ConfigMap 已经进入集群只说明配置对象存在。构建期间还要在 `k8s-master` 执行 `kubectl -n ci get pods` 找到临时 Agent Pod，并按附录 B 的命令确认 BuildKit 能读取代理变量、Maven 没有代理变量。不要打印 Secret `ghcr-push-config` 的内容。
 
+虚拟机方案不创建 `ConfigMap/deploy-overrides`。这样 `v1.0.8` 的 Helm 容器会生成内容为 `{}` 的空环境 values 文件，最终保留 Chart 默认的 `app.k8s.lab` 和 `k8s-lab-tls`。为了让重复演示不受以前的覆盖实验影响，在本环境执行：
+
+```bash
+kubectl -n "$CI_NAMESPACE" delete configmap deploy-overrides --ignore-not-found
+```
+
+命令显示 `not found` 或没有输出都表示原本没有该对象；显示 `deleted` 表示已清除旧覆盖。它只删除可选环境 values，不会删除应用、数据库、镜像凭据或 TLS Secret。云服务器方案需要这个 ConfigMap，不能把本段命令照搬到云环境。
+
 ### 12. 使用已审计的固定实验项目
 
-**本节不需要在任何终端执行命令，也不需要人工打开项目文件逐项核对。** 本实验固定使用公开仓库 [sunweisheng/K8S-Deploying-Java](https://github.com/sunweisheng/K8S-Deploying-Java)。2026-08-10 完成兼容性审计并发布的基线为 `main` 分支、Release [`v1.0.6`](https://github.com/sunweisheng/K8S-Deploying-Java/releases/tag/v1.0.6)、提交 `c14554fbdb325daeceaba6bdcf872590c271ea84`。
+**本节不需要在任何终端执行命令，也不需要人工打开项目文件逐项核对。** 本实验固定使用公开仓库 [sunweisheng/K8S-Deploying-Java](https://github.com/sunweisheng/K8S-Deploying-Java)。当前正式基线为 `main` 分支、`v1.0.8`、提交 `485a6e709d235e3c9b1dd0d673752a013c782d50`；Tag、GitHub Release 和 JAR 已从这次真实通过的基线发布。
 
 该仓库就是本攻略的固定实验输入，不是需要学员继续开发的示例骨架。应用代码、流水线配置和 Helm Chart 由 Codex 统一维护；以后实操中发现知识点不完整或配置问题时，由 Codex 核对后同时修正项目和两份手册，不要求学员临时编辑源码来绕过问题。
 
@@ -3191,17 +3245,17 @@ ConfigMap 已经进入集群只说明配置对象存在。构建期间还要在 
 | Java 构建 | OpenJDK 21、Spring Boot 3.5.16、Maven，产物 `target/app.jar` |
 | 业务功能 | Pod 名称/IP/节点展示与刷新、记录新增/修改/删除、后端分页 |
 | PostgreSQL | `app-db` Secret 注入连接信息，Flyway 管理 `demo_records` 表，Hibernate 使用 `ddl-auto=validate` |
-| Jenkins Agent | 项目声明 `maven`、`buildkit`、`helm`，插件自动加入 `jnlp`；`jnlp` 直连 GitHub，Maven 直连 Maven Central，只有 BuildKit 读取 `build-proxy` |
+| Jenkins Agent | 项目声明 `jnlp`、`maven`、`buildkit`、`helm`；插件为 `jnlp` 补动态连接参数；`jnlp` 和 BuildKit 读取 `build-proxy`，Maven 直连 Maven Central |
 | 镜像构建 | `jenkins-json-build@v3.1.4` 调用 Rootless BuildKit，推送到 `ghcr.io/sunweisheng/spring-app` 并生成 `sha256` 摘要 |
 | GHCR 关联 | Dockerfile 已设置标准 `org.opencontainers.image.source` 标签，首次推送后由 GHCR 自动关联源码仓库 |
-| Helm 部署 | Release `spring-app`，命名空间 `spring-app`，Chart `deploy/charts/spring-app`，镜像按摘要部署 |
+| Helm 部署 | Release `spring-app`，命名空间 `spring-app`，Chart `deploy/charts/spring-app`；镜像按摘要部署；本环境不创建 `deploy-overrides`，Ingress 使用 Chart 默认的 `app.k8s.lab` 和 `k8s-lab-tls` |
 | 流水线权限 | `jenkins-deployer` 只管理预先创建的应用命名空间；短期 Kubernetes Token 只挂载给 Helm 容器 |
 | 应用运行安全 | 两个非 root Pod、只读根文件系统、禁止自动挂载 ServiceAccount Token、存活与就绪探针 |
 | 访问入口 | Traefik Ingress，域名 `app.k8s.lab`，TLS Secret `k8s-lab-tls` |
 
-已完成的本地和部署前验证包括：JDK 21.0.12 下 `mvn clean verify` 的 14 个测试、`target/app.jar` 构建、V3.1.4 变量合同与 Agent YAML 结构测试、Helm lint 和模板渲染、Pod 数字身份、Maven/Helm 可写 Home、Token 挂载、JSON、JavaScript、敏感信息和 Git 差异检查。
+已完成的本地和部署前验证包括：JDK 21.0.12 下 `mvn clean verify` 的 21 个测试、`target/app.jar` 构建、V3.1.4 变量合同与 Agent YAML 结构测试、Helm lint、四种环境 values 组合的模板渲染、Pod 数字身份、Maven/Helm 可写 Home、Token 挂载、JSON、JavaScript、敏感信息和 Git 差异检查。
 
-这些结果证明固定项目与手册的静态契约一致，但不等于真实集群已经验收。Jenkins 创建 Agent Pod、BuildKit 推送 GHCR、GHCR 自动关联和私有镜像拉取、Helm 首次安装、Spring Boot 连接 PostgreSQL，以及双 Pod 负载均衡，仍要在第 15 和第 16 节通过本次实际流水线确认。
+静态检查之外，真实流水线 `main #11` 已进一步验证 Jenkins 创建四容器 Agent Pod、BuildKit 推送 GHCR 镜像与远程缓存、摘要传递、Helm 更新、Spring Boot 连接 PostgreSQL，以及两个应用副本就绪。这个结果证明当前虚拟机环境和正式基线已经端到端通过；以后新建或重建环境时，仍要在第 15 和第 16 节重新确认当次结果。
 
 ### 13. 固定基线无需修改
 
@@ -3263,8 +3317,8 @@ Jenkins 默认的 `Normalize API requests` 会尝试把这 60 次请求均匀分
 `main` 分支第一次构建会执行：
 
 1. Jenkins 按固定标签 `v3.1.4` 从公开仓库的 `shared-library/` 目录加载支持 BuildKit 的 `jenkins-json-build`。
-2. Jenkins Controller 创建临时 Agent Pod；项目 YAML 提供 Maven、BuildKit、Helm，Kubernetes 插件自动加入 `jnlp`，所以最终应有四个容器。
-3. `jnlp` 继承 Pod 的数字 UID/GID，与 Jenkins 建立 WebSocket 连接，并直接从 GitHub 把完整源码 checkout 到四个容器共享的工作区。
+2. Jenkins Controller 创建临时 Agent Pod；项目 YAML 提供 `jnlp`、Maven、BuildKit、Helm，Kubernetes 插件补齐 `jnlp` 动态连接参数，所以最终应有四个容器。
+3. `jnlp` 继承 Pod 的数字 UID/GID，与 Jenkins 建立 WebSocket 连接，并通过 `build-proxy` 从 GitHub 把完整源码 checkout 到四个容器共享的工作区。
 4. `jenkinsJsonBuild` 读取 `ci/jenkins-project.json`，创建每个项目独立的变量和执行结果。
 5. `maven` 容器读取共享工作区，直连 Maven Central，按 Java 模板执行 Maven、JUnit、Jacoco 和可选 SonarQube，生成 `target/app.jar`。
 6. `buildkit` 容器通过 `buildctl-daemonless.sh` 启动临时 Rootless daemon，读取 Dockerfile 并构建运行镜像。
@@ -3347,7 +3401,12 @@ kubectl -n "$CI_NAMESPACE" get pod,service,pvc -o wide
 kubectl -n "$APP_NAMESPACE" get statefulset,deployment,pod,service,ingress,pvc -o wide
 kubectl -n "$HEADLAMP_NAMESPACE" get deployment,pod,service,ingress -o wide
 HELM_DRIVER=configmap helm -n "$APP_NAMESPACE" list
+
+kubectl -n "$APP_NAMESPACE" get ingress spring-app \
+  -o jsonpath='{.spec.rules[0].host}{"\n"}{.spec.tls[0].secretName}{"\n"}'
 ```
+
+最后两行必须依次为 `app.k8s.lab` 和 `k8s-lab-tls`。如果不是这两个默认值，先回到第 11 节删除本环境遗留的 `ConfigMap/deploy-overrides`，再重新构建；不需要修改或重建 Jenkins Controller。
 
 #### 16.2 检查 Java 与数据库连接
 
@@ -3444,6 +3503,7 @@ kubectl -n "$APP_NAMESPACE" rollout status statefulset/postgresql --timeout=5m
 - Jenkins ServiceAccount 无权读取应用 Secret；Headlamp 管理身份是明确的实验例外。
 - Spring Boot Pod 设置 `automountServiceAccountToken: false`，不挂载无用途的 Kubernetes API Token。
 - Helm Chart 和 `values.yaml` 中没有密码或 Token，Chart 只引用现有 Secret。
+- 虚拟机 `ci` 命名空间没有 `ConfigMap/deploy-overrides`，应用 Ingress 使用 Chart 默认的 `app.k8s.lab` 和 `k8s-lab-tls`。
 - NFS 只向 `NFS_CLIENT_CIDR` 中的节点导出，使用 `sync` 和 `root_squash`，公网不能访问 TCP `2049`。
 - GHCR 中保留当前运行镜像和至少一个可回滚镜像。
 - GHCR 的 `IMAGE_REPOSITORY` 固定，自动推送只新增 tag；Package 可见性符合第 7.3 节选定的私有或公开模式。
@@ -3451,7 +3511,7 @@ kubectl -n "$APP_NAMESPACE" rollout status statefulset/postgresql --timeout=5m
 
 ### 18. 最终验收清单
 
-下面的空白清单用于每次新建或重建环境时重新验收，不代表所有项目会因 2026-08-11 的一次成功而永久有效。本次真实流水线和只读复查证据见第 2 节与附录 A；会中断服务的 Pod 重建持久化测试仍需在准备好实验数据后单独执行。
+下面的空白清单用于每次新建或重建环境时重新验收，不代表所有项目会因 2026-08-12 的一次成功而永久有效。本次真实流水线和只读复查证据见第 2 节与附录 A；会中断服务的 Pod 重建持久化测试仍需在准备好实验数据后单独执行。
 
 #### 18.1 平台与应用验收
 
@@ -3473,6 +3533,7 @@ kubectl -n "$APP_NAMESPACE" rollout status statefulset/postgresql --timeout=5m
 [ ] Jenkins 从 shared-library 子目录成功加载支持 BuildKit 的 jenkins-json-build v3.1.4
 [ ] ci/jenkins-project.json schemaVersion 为 3，jenkinsJsonBuild 执行 Maven、BuildKit 和 Helm
 [ ] Maven 使用 OpenJDK 21，测试和打包成功
+[ ] ci 命名空间没有 deploy-overrides ConfigMap，应用 Ingress 为 app.k8s.lab / k8s-lab-tls
 [ ] 两台 Worker 允许 Rootless 所需的非特权用户命名空间，且只承载可接受该安全边界的工作负载
 [ ] BuildKit Rootless 无 Docker Socket、无特权模式，镜像使用已核对的固定摘要
 [ ] BuildKit 远程缓存成功写入 GHCR，元数据中的 sha256 摘要经过校验后传给 Helm
@@ -3518,7 +3579,7 @@ V3.1.4 继续正式提供：
 - BuildKit 镜像、执行器、frontend、daemon 参数、状态目录、Docker 配置、Registry Secret、UID/GID 和容器资源都可以通过 JSON 变量覆盖。
 - 默认 Pod 无特权、无 Docker Socket、无 `hostPath`；Registry 凭据只挂给 BuildKit，短期 Kubernetes Token 只挂给 Helm。
 
-V3.1.2 修复了 `BuildContext.copy()` 的 Jenkins CPS 错误，真实 Jenkins 随后可以越过配置解析并创建 Agent Pod。V3.1.3 继续修复四容器身份和可写目录：Pod 使用数字 UID/GID `1000:1000` 与 `fsGroup: 1000`，Maven、Helm 显式使用同一身份，自动注入的 `jnlp` 继承 Pod 数字身份；Maven 和 Helm 各自使用可写 Home，Maven 的 `HOME`、`MAVEN_CONFIG`、Java `user.home` 和本地仓库全部迁出 `/root`。
+V3.1.2 修复了 `BuildContext.copy()` 的 Jenkins CPS 错误，真实 Jenkins 随后可以越过配置解析并创建 Agent Pod。V3.1.3 继续修复四容器身份和可写目录：Pod 使用数字 UID/GID `1000:1000` 与 `fsGroup: 1000`，Maven、Helm 显式使用同一身份，当时由插件自动注入的 `jnlp` 继承 Pod 数字身份；Maven 和 Helm 各自使用可写 Home，Maven 的 `HOME`、`MAVEN_CONFIG`、Java `user.home` 和本地仓库全部迁出 `/root`。当前项目为配置 checkout 代理而显式定义 `jnlp`，并继续使用同一数字身份。
 
 真实构建 `#5` 已验证 V3.1.3 的 Agent Pod 达到 `4/4 Running`，四个容器均以 `1000:1000` 运行，Maven 14 个测试和 Java 打包成功。随后 BuildKit 报告 `newuidmap ... operation not permitted`：Chart 5.9.49 的 `restrictedPssSecurityContext` 自动给 BuildKit 补入 `allowPrivilegeEscalation: false` 和 `drop: ALL`，使 setuid 辅助程序无法建立 subordinate UID/GID 映射，因此构建尚未到达 GHCR 推送和 Helm 部署。
 
@@ -3530,13 +3591,20 @@ V3.1.4 只为 BuildKit 容器显式设置 `allowPrivilegeEscalation: true`，在
 | --- | --- | --- |
 | `v3.1.4` 标签提交 `3cb1893` | PR #7、合并后的 `master` 和 Tag 工作流的 Java 21、Java 25 检查全部通过 | 发布标签包含本次 BuildKit UID/GID 映射修复，不依赖标签外提交 |
 | 本地与 Release 记录 | OpenJDK 21 下 29 个 Maven 测试、4 个 Python 测试、24 个相关 JSON 和 2 个 Pod YAML 解析通过 | 源码与结构化模板验证通过 |
-| 固定实验项目 `v1.0.6` | 部署前静态检查通过；真实 Jenkins `#3` 继续完成 14 个 Maven 测试、JAR/JaCoCo、BuildKit、GHCR 和 Helm 全流程 | Maven 直连，`build-proxy` 只供 BuildKit 使用；项目与 V3.1.4 变量合同已经在真实环境验证 |
+| 固定实验项目 `v1.0.8` | 21 个本地测试、JAR/JaCoCo、Helm lint，以及默认、只覆盖域名、只覆盖 TLS Secret、同时覆盖两项的模板渲染通过 | 项目可以在没有环境覆盖时使用 Chart 默认值，也可以按环境只覆盖实际提供的字段；版本一致性测试会动态比较 Maven、Chart `version` 和 `appVersion` |
 | 真实 Kubernetes Agent + Maven | V3.1.3 构建 `#5` 达到 `4/4 Running`，四容器身份、可写目录、14 个测试和 Java 打包通过 | 已验收 Agent 与 Maven；不代表 BuildKit、Registry 和部署通过 |
 | BuildKit 诊断 Pod | V3.1.4 使用的 `allowPrivilegeEscalation: true`、`drop: ALL`、`SETUID`、`SETGID` 成功启动 BuildKit 并列出 OCI Worker | 证明最小安全上下文可建立 UID/GID 映射；不等于 Jenkins 端到端通过 |
 | 真实 Kubernetes + Registry | V3.1.4 构建 `#6` 使用项目提交 `54d257a...`（`v1.0.5`）并以 `SUCCESS` 结束；首次缓存不存在后成功创建 `buildcache`，推送镜像，读取摘要 `sha256:84dff057...cabb6c0`，由 Helm 安装并等待两个副本 Ready | 已验收 BuildKit UID/GID 映射、GHCR 镜像与缓存推送、摘要传递、Helm ConfigMap 发布记录、PostgreSQL 连接和 `/actuator/health` 返回 `UP` |
 | `v1.0.6` 真实端到端流水线 | Jenkins `K8S-Deploying-Java/main #3` 使用提交 `c14554f...` 和 `jenkins-json-build v3.1.4`，以 `SUCCESS` 结束；14 个测试通过，BuildKit 推送镜像及 `buildcache`，镜像摘要 `sha256:cd77ac98...d326f66a` 经校验后传给 Helm，Spring Boot 两个副本 Ready | 已证明 Maven 直连、BuildKit 代理、GHCR 推送与缓存、摘要部署、PostgreSQL 连接和 HTTPS 健康检查在当前虚拟机方案可用 |
+| `v1.0.8` 候选构建 `#8` | 使用提交 `d32718d...`；19 个测试和 JAR 构建通过，OCI 阶段仍使用旧的 30 分钟限制，基础镜像最后一个分层只下载到 `37.75/52.31 MB` 时触发超时，结果为 `ABORTED` | 证明失败原因是慢速 Registry 传输超过阶段时限，随后把固定项目的 OCI 阶段调整为 60 分钟 |
+| `v1.0.8` 候选构建 `#9` | Agent 已创建，但完整源码 checkout 连续失败；日志为 `Failed to connect to github.com port 443` 和 `Maximum checkout retry attempts reached`，尚未进入 Maven 或 BuildKit，结果为 `FAILURE` | 记录 GitHub 网络波动对 `jnlp` checkout 的影响；这次失败不能用于判断 Maven、镜像或部署是否正常 |
+| `v1.0.8` 候选构建 `#10` | 使用提交 `c40ae2f...`；20 个测试、JAR、60 分钟 OCI 阶段、镜像与缓存推送、摘要 `sha256:54fc0013...0a822b`、Helm Revision 2、两个副本、PostgreSQL、HTTPS 和健康检查均通过 | 真实验收发现 `Chart.yaml` 的 `version`、`appVersion` 仍是 `1.0.7`，因此没有据此发布 `v1.0.8`，而是补齐版本一致性检查后继续验证 |
+| `v1.0.8` 正式基线构建 `#11` | 使用提交 `485a6e7...` 和 `jenkins-json-build v3.1.4`；21 个测试通过，JAR 构建成功，OCI 阶段显示 60 分钟，镜像 `spring-app:11` 与 `buildcache` 推送成功，摘要为 `sha256:c809a4a2...3b16aaff`；Helm Revision 3 显示 Chart `spring-app-1.0.8`、App `1.0.8`，两个新副本 Ready | `ci/deploy-overrides` 不存在时保留 `app.k8s.lab` 和 `k8s-lab-tls`；PostgreSQL 17.10 连接、HTTPS 根页面 `200`、`/actuator/health` 返回 `UP`，正式证明本虚拟机方案端到端通过 |
+| `v1.0.7` 历史方案 | 要求 Jenkins Controller 同时提供 `DEPLOY_APP_HOST` 和 `DEPLOY_TLS_SECRET`，缺少任一变量都会在流水线解析阶段失败 | 该做法把应用环境差异放在 Jenkins Controller，且不支持只覆盖一个字段；`v1.0.8` 已改为可选环境 values，新安装不要再配置这两个变量 |
 
-源码检查通过不等于集群已经验收。本文因为 BuildKit 访问 Docker Hub 和 GHCR 需要本机 `7890` 代理，继续使用项目内的 `ci/jenkins-agent.yaml`；`jnlp` 和 Maven 不读取这份代理配置。容器名、变量名、安全上下文和挂载方式继续跟随 V3.1.4 的 `java-buildkit-helm` 模板。
+正式 Release 为 [`v1.0.8`](https://github.com/sunweisheng/K8S-Deploying-Java/releases/tag/v1.0.8)，Tag 指向完整提交 `485a6e709d235e3c9b1dd0d673752a013c782d50`。Release 附件 `k8s-deploying-java-v1.0.8.jar` 来自 `#11` 已部署的不可变镜像，JAR 内部 Maven 版本为 `1.0.8`，SHA-256 为 `f151e2cf1f70b2d18e9f44eff8acc06e967fc92bf7dc96ceb922cbb5c449990b`。
+
+源码检查通过不等于集群已经验收。本文因为 `jnlp` 访问 GitHub、BuildKit 访问 Docker Hub 和 GHCR 都需要本机 `7890` 代理，继续使用项目内的 `ci/jenkins-agent.yaml`；Maven 不读取这份代理配置。容器名、变量名、安全上下文和挂载方式继续跟随 V3.1.4 的 `java-buildkit-helm` 模板。
 
 本实验采用以下边界：
 
@@ -3936,7 +4004,7 @@ but wound up catching com.bluersw.jenkins.libraries.v3.BuildContext.copy
 
 反复点击构建、重启 Jenkins、修改 Agent Pod 权限或重新扫描仓库都不能修复旧共享类库源码。该问题已经由 `jenkins-json-build v3.1.2` 修复，当前 `v3.1.4` 继续包含该修复；已经发布的旧标签都保持原内容，没有移动或覆盖。不要把 Jenkinsfile 临时改为引用会继续变化的 `master`。
 
-当前固定项目已经更新到提交 `c14554f...`，Jenkinsfile 固定 `v3.1.4`。在 Jenkins 打开 `spring-app`，点击一次 `Scan Multibranch Pipeline Now`。扫描发现 `c14554f...` 后通常会自动触发 `main` 的新构建；如果构建已经开始，不要再点击 `Build Now`。只有扫描结束但没有自动构建时，才进入 `main` 手工点击一次 `Build Now`。新构建日志必须出现 `Loading library jenkins-json-build@v3.1.4` 和 `Obtained Jenkinsfile from c14554f...`。
+当前固定项目已经更新到提交 `4719b46...`，Jenkinsfile 固定 `v3.1.4`。在 Jenkins 打开 `spring-app`，点击一次 `Scan Multibranch Pipeline Now`。扫描发现 `4719b46...` 后通常会自动触发 `main` 的新构建；如果构建已经开始，不要再点击 `Build Now`。只有扫描结束但没有自动构建时，才进入 `main` 手工点击一次 `Build Now`。新构建日志必须出现 `Loading library jenkins-json-build@v3.1.4` 和 `Obtained Jenkinsfile from 4719b46...`。
 
 #### Agent Pod 长时间 `Pending` 并反复出现 `CreateContainerConfigError`
 
@@ -3975,16 +4043,16 @@ kubectl -n "$CI_NAMESPACE" get pod "$BUILD_POD" \
 kubectl -n "$CI_NAMESPACE" describe pod "$BUILD_POD"
 ```
 
-如果 reason 是上面的 `CreateContainerConfigError`，先在 Jenkins 点红色停止按钮结束当前构建，不要继续等。这个身份和可写目录问题由 `jenkins-json-build v3.1.3` 修复，当前 `v3.1.4` 继续包含该修复：Pod、Maven、Helm 使用数字 UID/GID `1000:1000`，Pod 使用 `fsGroup: 1000`；插件自动注入的 `jnlp` 继承 Pod 数字身份。Maven 和 Helm 各自挂载可写 Home，Maven 配置与仓库移到 `/home/jenkins/.m2`。V3.1.4 另外为 BuildKit 增加 UID/GID 映射所需的最小安全上下文，详见后面的 `newuidmap` 排障小节。
+如果 reason 是上面的 `CreateContainerConfigError`，先在 Jenkins 点红色停止按钮结束当前构建，不要继续等。这个身份和可写目录问题由 `jenkins-json-build v3.1.3` 修复，当前 `v3.1.4` 继续包含该修复：Pod、Maven、Helm 使用数字 UID/GID `1000:1000`，Pod 使用 `fsGroup: 1000`；旧构建中由插件自动注入的 `jnlp` 继承 Pod 数字身份，当前项目显式定义的 `jnlp` 也使用同一身份。Maven 和 Helm 各自挂载可写 Home，Maven 配置与仓库移到 `/home/jenkins/.m2`。V3.1.4 另外为 BuildKit 增加 UID/GID 映射所需的最小安全上下文，详见后面的 `newuidmap` 排障小节。
 
-按上一段步骤扫描到 `c14554f...` 并触发新构建后，在 **`k8s-master`** 观察：
+按上一段步骤扫描到 `4719b46...` 并触发新构建后，在 **`k8s-master`** 观察：
 
 ```bash
 source "$HOME/k8s-platform/platform.env"
 kubectl -n "$CI_NAMESPACE" get pods -l workload=jenkins-build -w
 ```
 
-新 Agent Pod 应从 `0/4` 逐步变为 `4/4 Running`；四个容器是 `maven`、`buildkit`、`helm` 和插件自动加入的 `jnlp`。看到 `4/4` 后按 `Ctrl+C` 退出观察，再趁构建仍在运行时整段检查身份和目录：
+新 Agent Pod 应从 `0/4` 逐步变为 `4/4 Running`；四个容器是项目定义的 `jnlp`、`maven`、`buildkit`、`helm`，插件会为 `jnlp` 补动态连接参数。看到 `4/4` 后按 `Ctrl+C` 退出观察，再趁构建仍在运行时整段检查身份和目录：
 
 ```bash
 source "$HOME/k8s-platform/platform.env"
@@ -4128,7 +4196,7 @@ V3.1.4 的 `buildkit` 行必须包含：
 uid=1000 gid=1000 allowPE=true add=["SETUID","SETGID"] drop=["ALL"] seccomp=Unconfined apparmor=Unconfined
 ```
 
-其他三个容器的 `allowPE` 应为 `false`，并保持 `drop=["ALL"]`。如果 BuildKit 仍显示 `allowPE=false` 或没有 `SETUID`、`SETGID`，说明当前构建还在使用旧项目或旧共享库。不要现场修改临时 Pod，也不要改成 `privileged: true`；确认日志已经出现 `Obtained Jenkinsfile from c14554f...` 和 `Loading library jenkins-json-build@v3.1.4`，停止旧构建后只触发一次新构建。
+其他三个容器的 `allowPE` 应为 `false`，并保持 `drop=["ALL"]`。如果 BuildKit 仍显示 `allowPE=false` 或没有 `SETUID`、`SETGID`，说明当前构建还在使用旧项目或旧共享库。不要现场修改临时 Pod，也不要改成 `privileged: true`；确认日志已经出现 `Obtained Jenkinsfile from 4719b46...` 和 `Loading library jenkins-json-build@v3.1.4`，停止旧构建后只触发一次新构建。
 
 #### BuildKit 的其他启动错误或 GHCR 返回 401/403
 
@@ -4349,7 +4417,7 @@ Pod 10.244.x.x
 ### D.2 参考资料
 
 - [K8S-Deploying-Java 实验项目](https://github.com/sunweisheng/K8S-Deploying-Java)
-- [K8S-Deploying-Java v1.0.6 Release](https://github.com/sunweisheng/K8S-Deploying-Java/releases/tag/v1.0.6)
+- [K8S-Deploying-Java v1.0.8 Release](https://github.com/sunweisheng/K8S-Deploying-Java/releases/tag/v1.0.8)
 - [Jenkins Kubernetes 插件](https://plugins.jenkins.io/kubernetes/)
 - [Jenkins Shared Libraries](https://www.jenkins.io/doc/book/pipeline/shared-libraries/)
 - [jenkins-json-build](https://github.com/sunweisheng/jenkins-json-build)
@@ -4397,7 +4465,7 @@ Pod 10.244.x.x
   "id": "image",
   "name": "OCI image",
   "container": "buildkit",
-  "timeoutMinutes": 30,
+  "timeoutMinutes": 60,
   "steps": [
     {
       "type": "containerImage",
@@ -4422,7 +4490,7 @@ JSON 中的 image 阶段
   │ VariableResolver 替换 ${变量}
   ▼
 V3Pipeline.runStageBody()
-  │ 根据 container: buildkit 切换容器，并设置 30 分钟超时
+  │ 根据 container: buildkit 切换容器，并设置 60 分钟超时
   ▼
 V3Pipeline.dispatchStep()
   │ 根据 type: containerImage 选择步骤处理方法
@@ -4468,7 +4536,7 @@ if (containerName) {
 }
 ```
 
-`timeoutMinutes: 30` 同样不会进入 BuildKit 命令。共享类库在该阶段外层增加 Jenkins 超时控制：
+共享模板默认是 `timeoutMinutes: 30`，固定项目从 `v1.0.8` 起把 `image` 阶段覆盖为 `timeoutMinutes: 60`，用于容纳代理网络中的大镜像层传输。这个值同样不会进入 BuildKit 命令；共享类库只在该阶段外层增加 Jenkins 超时控制：
 
 ```groovy
 action = {
@@ -4538,14 +4606,14 @@ String digest = this."${methodName}"(
 | JSON 字段 | 构建 `#3` 解析结果 | 生成的命令或控制行为 |
 | --- | --- | --- |
 | `container` | `buildkit` | 进入 Agent Pod 的 `buildkit` 容器，不进入命令 |
-| `timeoutMinutes` | `30` | Jenkins 30 分钟超时控制，不进入命令 |
+| `timeoutMinutes` | `60` | Jenkins 60 分钟超时控制，不进入命令 |
 | `type` | `containerImage` | 选择 `runContainerImageStep()` |
 | `builder` | `buildkit` | 选择 `runBuildKitContainerImage()` |
 | `executor` | `buildctl-daemonless.sh` | 命令开头 |
 | `frontend` | `dockerfile.v0` | `--frontend dockerfile.v0` |
 | `context` | `.` | `--local context=.` |
 | `dockerfile` | `Dockerfile` | `--local dockerfile=. --opt filename=Dockerfile` |
-| `destinations` | `ghcr.io/sunweisheng/spring-app:3` | `--output type=image,name=...,push=true` |
+| `destinations` | `ghcr.io/sunweisheng/spring-app:11` | `--output type=image,name=...,push=true` |
 | `cache` | `true` | 使用缓存参数，不添加 `--no-cache` |
 | `cacheFrom` | GHCR `buildcache` | `--import-cache type=registry,ref=...` |
 | `cacheTo` | GHCR `buildcache,mode=max` | `--export-cache type=registry,ref=...,mode=max` |
@@ -4604,7 +4672,7 @@ runCommandStep(
 
 #### D.3.6 真实构建最终执行的命令
 
-虚拟机真实流水线 `K8S-Deploying-Java/main #3` 的 Jenkins 日志记录了下面这条命令。日志中实际显示为一行，这里只为便于阅读拆成多行，参数和顺序没有改变：
+正式基线真实流水线 `K8S-Deploying-Java/main #11` 的 Jenkins 日志记录了下面这条命令。日志中实际显示为一行，这里只为便于阅读拆成多行，参数和顺序没有改变：
 
 ```bash
 buildctl-daemonless.sh build \
@@ -4614,11 +4682,13 @@ buildctl-daemonless.sh build \
   --opt 'filename=Dockerfile' \
   --import-cache 'type=registry,ref=ghcr.io/sunweisheng/spring-app:buildcache' \
   --export-cache 'type=registry,ref=ghcr.io/sunweisheng/spring-app:buildcache,mode=max' \
-  --output 'type=image,name=ghcr.io/sunweisheng/spring-app:3,push=true' \
+  --output 'type=image,name=ghcr.io/sunweisheng/spring-app:11,push=true' \
   --metadata-file .jenkins-json-build/image-metadata.json
 ```
 
 命令里没有 `HTTP_PROXY` 参数，因为代理通过 `buildkit` 容器的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量生效。`buildctl-daemonless.sh` 启动的 `buildkitd` 子进程会继承这些环境变量。
+
+这次命令最终把镜像和 `buildcache` 推送到 GHCR，并从元数据文件得到摘要 `sha256:c809a4a29ac153b820d1cc9f6b373eba2f03a25c6c61a6ef912071403b16aaff`；Helm Revision 3 随后按该摘要部署，而不是只按 `:11` 标签部署。
 
 构建完成后，共享类库读取元数据文件中的 `containerimage.digest`，并要求它是合法的 `sha256` 摘要：
 
