@@ -6,7 +6,7 @@
 > 实验项目：[sunweisheng/K8S-Deploying-Java](https://github.com/sunweisheng/K8S-Deploying-Java)，默认构建分支为 `main`。  
 > 当前正式基线：`K8S-Deploying-Java v1.0.8`，提交 `485a6e709d235e3c9b1dd0d673752a013c782d50`，项目位于仓库根目录；Tag、GitHub Release 和 JAR 已正式发布。  
 > 实际验证状态：21 个测试、JAR 构建、Rootless BuildKit 镜像与缓存推送、镜像摘要传递、Helm Revision 3、两个应用副本、PostgreSQL 17.10、HTTPS 页面和健康接口均已在本虚拟机环境通过；完整记录见第 2 节与附录 A。  
-> 配套方案：[查看云服务器方案](./kubernetes-jenkins-buildkit-github-springboot3-postgresql-cloud-server-guide.md)。
+> 配套方案：[查看云服务器方案](kubernetes-jenkins-buildkit-github-springboot3-postgresql-cloud-server-guide.md)。
 
 ## 使用说明
 

@@ -7,7 +7,7 @@
 > 当前正式基线：`K8S-Deploying-Java v1.0.9`，提交 `f71418a0346a4cf29109efaef60efebf319172cf`，Jenkinsfile 已固定 `jenkins-json-build v3.2.0`；Tag、GitHub Release 和 JAR 已正式发布。`v1.0.8` 提交 `485a6e709d235e3c9b1dd0d673752a013c782d50` 继续作为虚拟机真实流水线的历史验证基线。  
 > 实际验证状态：2026-08-12 已在三台一次性阿里云 ECS 上完成真实安装和只读验收。三个节点均为 `Ready`；Calico 的四项 Tigera 状态正常，三节点 BGP 全互联，IPPool 为 IPIP Always、VXLAN Never；NFS、Jenkins、PostgreSQL、Traefik、Headlamp 和 Spring Boot 均已运行。云端 Jenkins `K8S-Deploying-Java/main #5` 直接加载 `jenkins-json-build v3.2.0`，使用提交 `f71418a0346a4cf29109efaef60efebf319172cf` 完成 21 个测试、BuildKit 推送和 Helm Revision 2 部署，最终为 `SUCCESS`。培训电脑通过本地 CA 和 `30443` 访问 Jenkins、应用健康接口及 Headlamp 均得到 `HTTP 200`。本次未执行跨节点固定测试 Pod、页面数据库增删改和删除 Jenkins/PostgreSQL Pod 的持久化复验，也未从阿里云控制台核对安全组来源范围；详细证据、未验证项和现场修正见附录 A.2 与附录 B。  
 > 临时环境说明：本次实测使用的公网地址为 `8.218.180.162`、`8.210.138.194`、`8.210.148.60`，对应私网地址为 `192.168.0.10`、`192.168.0.11`、`192.168.0.12`。这组三台 ECS 会在实验结束后删除，公网地址届时失效；以后重建时必须先按参数表替换真实地址，不能照抄本次公网地址。  
-> 配套方案：[查看本地虚拟机方案](./kubernetes-jenkins-buildkit-github-springboot3-postgresql-vm-guide.md)。
+> 配套方案：[查看本地虚拟机方案](kubernetes-jenkins-buildkit-github-springboot3-postgresql-vm-guide.md)。
 
 ## 使用说明
 
