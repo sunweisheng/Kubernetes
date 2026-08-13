@@ -1,17 +1,20 @@
 # Kubernetes、Jenkins、BuildKit、GitHub、Spring Boot 3 与 PostgreSQL 部署攻略：云服务器方案
 
-> 更新时间：2026-08-12  
+> 更新时间：2026-08-13  
 > 文档定位：既是可以逐步执行的实验操作手册，也是解释原理、风险、验证方法和排障思路的培训文档。  
 > 适用环境：三台阿里云香港 ECS，位于同一 VPC、交换机和安全组，使用 Calico 节点间 BGP + IPIP。  
 > 实验项目：[sunweisheng/K8S-Deploying-Java](https://github.com/sunweisheng/K8S-Deploying-Java)，默认构建分支为 `main`。  
 > 当前正式基线：`K8S-Deploying-Java v1.0.9`，提交 `f71418a0346a4cf29109efaef60efebf319172cf`，Jenkinsfile 已固定 `jenkins-json-build v3.2.0`；Tag、GitHub Release 和 JAR 已正式发布。`v1.0.8` 提交 `485a6e709d235e3c9b1dd0d673752a013c782d50` 继续作为虚拟机真实流水线的历史验证基线。  
 > 实际验证状态：2026-08-12 已在三台一次性阿里云 ECS 上完成真实安装和只读验收。三个节点均为 `Ready`；Calico 的四项 Tigera 状态正常，三节点 BGP 全互联，IPPool 为 IPIP Always、VXLAN Never；NFS、Jenkins、PostgreSQL、Traefik、Headlamp 和 Spring Boot 均已运行。云端 Jenkins `K8S-Deploying-Java/main #5` 直接加载 `jenkins-json-build v3.2.0`，使用提交 `f71418a0346a4cf29109efaef60efebf319172cf` 完成 21 个测试、BuildKit 推送和 Helm Revision 2 部署，最终为 `SUCCESS`。培训电脑通过本地 CA 和 `30443` 访问 Jenkins、应用健康接口及 Headlamp 均得到 `HTTP 200`。本次未执行跨节点固定测试 Pod、页面数据库增删改和删除 Jenkins/PostgreSQL Pod 的持久化复验，也未从阿里云控制台核对安全组来源范围；详细证据、未验证项和现场修正见附录 A.2 与附录 B。  
 > 临时环境说明：本次实测使用的公网地址为 `8.218.180.162`、`8.210.138.194`、`8.210.148.60`，对应私网地址为 `192.168.0.10`、`192.168.0.11`、`192.168.0.12`。这组三台 ECS 会在实验结束后删除，公网地址届时失效；以后重建时必须先按参数表替换真实地址，不能照抄本次公网地址。  
-> 配套方案：[查看本地虚拟机方案](kubernetes-jenkins-buildkit-github-springboot3-postgresql-vm-guide.md)。
+> 配套方案：[查看本地虚拟机方案](./kubernetes-jenkins-buildkit-github-springboot3-postgresql-vm-guide.md)。
+> 共用外部附件：[Kubernetes 与 Calico 网络运行机制](./kubernetes-calico-networking-principles.md)，集中解释 Operator、CNI、Felix、BGP、IPIP、Linux 路由和 RouterOS 的关系。
 
 ## 使用说明
 
 本手册只描述云服务器路线。请从第一部分开始顺序执行，不要混入 UTM RouterOS、Multipass、桥接网卡、Mac 代理或无封装 Pod 网络配置。
+
+Calico 的共同原理不在两份操作手册中重复展开。开始网络安装前，先阅读共用外部附件 [Kubernetes 与 Calico 网络运行机制](./kubernetes-calico-networking-principles.md)；本手册正文只保留云服务器参数、操作和验收步骤。
 
 作为实验操作手册，每个阶段都给出命令、预期结果和验收方法；作为培训文档，关键位置同时说明命令用途、参数含义、安全边界、常见错误和恢复办法。完成本手册后，应能解释并实际验证：
 
@@ -828,11 +831,17 @@ kubectl version --client
 每台 ECS 都必须让 kubelet 使用自己的私有 IP。下面命令从本机默认路由读取源地址，并检查它必须是本次三台 ECS 的私有 IP 之一；在三台机器上各完整执行一次：
 
 ```bash
+# 三台 ECS 是在云平台中手工创建的，本方案不会替你分配私有 IP。
+# 为避免登录错机器，或创建时把机器放入错误的网络，
+# 先读取当前这台 ECS 实际使用的私有 IP。
 NODE_PRIVATE_IP="$(
+  # 查询当前机器访问外网时使用哪个本机 IP；不会真正访问 1.1.1.1。
   ip -4 route get 1.1.1.1 \
     | awk '{for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}'
 )"
 
+# 只有本次计划中的三台 ECS 私有 IP 才允许继续。
+# 如果不是 .10、.11 或 .12，说明当前机器或网络配置可能有误，立即停止。
 case "$NODE_PRIVATE_IP" in
   192.168.0.10|192.168.0.11|192.168.0.12) ;;
   *)
@@ -841,9 +850,12 @@ case "$NODE_PRIVATE_IP" in
     ;;
 esac
 
+# 确认地址正确后，设置 kubelet 使用当前 ECS 的私有 IP 作为 Kubernetes 节点地址。
 printf 'KUBELET_EXTRA_ARGS=--node-ip=%s\n' "$NODE_PRIVATE_IP" \
   | sudo tee /etc/default/kubelet
+# 重启 kubelet，使刚才设置的节点私有 IP 生效。
 sudo systemctl restart kubelet
+# 显示最终结果，确认本机写入的是正确的私有 IP。
 cat /etc/default/kubelet
 ```
 
@@ -854,14 +866,29 @@ cat /etc/default/kubelet
 只在 `hk-k8s-master` 执行：
 
 ```bash
+# kubelet 是每台 ECS 上持续运行的节点服务，负责向集群登记本机并管理本机 Pod。
+# 上一节已为 kubelet 设置 --node-ip，指定它必须使用本机私有 IP。
+# kubeadm 是初始化工具；下面由它创建控制平面，并配置 kubelet 开始按该私有 IP 工作。
+
+# 指定本次控制平面节点的私有 IP。
 export MASTER_PRIVATE_IP=192.168.0.10
+# 指定本次初始化 Kubernetes 使用的版本。
 export KUBERNETES_VERSION=v1.36.2
 
-sudo kubeadm init \
-  --kubernetes-version="$KUBERNETES_VERSION" \
-  --apiserver-advertise-address="$MASTER_PRIVATE_IP" \
-  --pod-network-cidr=10.244.0.0/16 \
-  --service-cidr=10.96.0.0/12
+# 将初始化参数放入列表，便于逐项说明；最后会原样传给 kubeadm init。
+KUBEADM_INIT_ARGS=(
+  # 使用前面指定的 Kubernetes 版本，避免 kubeadm 自动选择其他版本。
+  "--kubernetes-version=$KUBERNETES_VERSION"
+  # API Server 向 Worker 和其他集群组件公布 master 的私有 IP。
+  "--apiserver-advertise-address=$MASTER_PRIVATE_IP"
+  # 为后续 Pod 分配 IP 的地址范围；不能与 ECS 私网或 Service 网段重叠。
+  "--pod-network-cidr=10.244.0.0/16"
+  # 为 Kubernetes Service 分配 ClusterIP 的地址范围；不能与 ECS 私网或 Pod 网段重叠。
+  "--service-cidr=10.96.0.0/12"
+)
+
+# 初始化 Kubernetes 控制平面，并传入上面已经逐项说明的四个参数。
+sudo kubeadm init "${KUBEADM_INIT_ARGS[@]}"
 
 mkdir -p "$HOME/.kube"
 sudo cp /etc/kubernetes/admin.conf "$HOME/.kube/config"
@@ -880,6 +907,8 @@ kubectl get nodes -o wide
 安装 Calico 前节点显示 `NotReady` 是正常的；三个 `INTERNAL-IP` 必须是记录的私有 IP，不能是公网 IP。
 
 ### B.8 安装 Calico：BGP 交换路由，关闭 VXLAN
+
+本节执行云服务器方案的实际安装。CRD、Operator、CNI、Felix、BIRD、Linux 路由与 IPIP 的完整工作机制见共用外部附件 [Kubernetes 与 Calico 网络运行机制](./kubernetes-calico-networking-principles.md)。
 
 只在 `hk-k8s-master` 执行：
 
@@ -918,6 +947,84 @@ spec:
 EOF
 ```
 
+#### B.8.1 Calico Installation 配置逐项说明
+
+这段命令会把一份 Calico 网络配置交给 Kubernetes，再由已经安装的 Calico Operator 读取并实施：
+
+```bash
+cat <<'EOF' | kubectl apply -f -
+```
+
+`cat <<'EOF'` 表示读取后面的多行 YAML，直到单独一行 `EOF` 为止；引号表示 Shell 不替换其中的变量。`|` 将 YAML 传给 `kubectl apply -f -`；最后的 `-` 表示 `kubectl` 从前面传入的内容读取配置并创建或更新对象。
+
+```yaml
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+```
+
+这是一份 Calico 安装配置：
+
+- `apiVersion: operator.tigera.io/v1`：配置使用 Calico Operator 定义的 `v1` 接口。Kubernetes 原本不认识它；前一步安装 `tigera-operator.yaml` 并等待 `installations.operator.tigera.io` 注册成功后，Kubernetes 才能接收这种对象。
+- `kind: Installation`：对象类型为 Calico 安装配置。
+- `name: default`：Calico Operator 约定读取名为 `default` 的安装配置。
+
+```yaml
+nodeAddressAutodetectionV4:
+  kubernetes: NodeInternalIP
+```
+
+要求 Calico 使用 Kubernetes 节点的 `INTERNAL-IP` 作为节点间通信地址。前一节已经通过 kubelet 的 `--node-ip` 为三台 ECS 固定 `.10`、`.11`、`.12` 私有 IP，因此 Calico 会使用这些 VPC 私有 IP，不会使用公网 IP。
+
+```yaml
+ipPools:
+  - blockSize: 26
+    cidr: 10.244.0.0/16
+```
+
+定义 Pod 地址池：
+
+- `cidr: 10.244.0.0/16`：所有 Pod 从 `10.244.0.0` 至 `10.244.255.255` 的范围获取 IP；该范围不能与 ECS VPC 私网 `192.168.0.0/24` 或 Kubernetes Service 网段 `10.96.0.0/12` 重叠。
+- `blockSize: 26`：Calico 从总地址池中按 `/26` 小段分给节点。每段有 64 个地址，三节点实验中足够使用。
+
+```yaml
+encapsulation: IPIP
+```
+
+跨节点 Pod 通信使用 IPIP。Pod 数据包外面会再包一层以三台 ECS 私有 IP 为来源和目标的网络包：
+
+```text
+Pod 10.244.x.x
+  -> 外层使用 ECS 私有 IP 192.168.0.10/.11/.12
+  -> 阿里云 VPC
+  -> 目标节点
+  -> 目标 Pod
+```
+
+阿里云 VPC 不需要认识 Pod 网段，只需要能让三台 ECS 私有 IP 互通。BGP 仍负责告诉每个节点“哪个 Pod 地址段在哪台 ECS”，IPIP 负责让跨节点数据穿过 VPC。本文不使用 VXLAN。
+
+```yaml
+natOutgoing: Enabled
+```
+
+Pod 访问 GitHub、GHCR、Docker Hub、Maven Central 等外部服务时，Calico 把 Pod 源地址转换为所在 ECS 的私有 IP。之后由阿里云公网出口转换为该 ECS 的公网 IP：
+
+```text
+Pod 10.244.x.x
+  -> ECS 私有 IP 192.168.0.x
+  -> ECS 公网 IP
+  -> 外部服务
+```
+
+外部服务无需知道或配置 `10.244.0.0/16`。
+
+```yaml
+nodeSelector: all()
+```
+
+该地址池对所有 Kubernetes 节点生效，master、node1、node2 都能从此地址池分配 Pod IP。
+
 然后按 Calico `v3.32.1` 官方基础资源的顺序创建 `APIServer/default`：
 
 ```bash
@@ -932,7 +1039,7 @@ EOF
 
 这个对象不能省略；如果 `tiers` 一直等待 Tigera API Server，按附录 B.1.18 处理。
 
-再把三节点 BGP 全互联写成明确配置，避免培训时只依赖默认值：
+之后执行，把三节点 BGP 全互联写成明确配置，避免培训时只依赖默认值：
 
 ```bash
 cat <<'EOF' | kubectl apply -f -

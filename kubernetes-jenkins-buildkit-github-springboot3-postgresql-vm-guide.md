@@ -1,16 +1,19 @@
 # Kubernetes、Jenkins、BuildKit、GitHub、Spring Boot 3 与 PostgreSQL 部署攻略：虚拟机方案
 
-> 更新时间：2026-08-12  
+> 更新时间：2026-08-13  
 > 文档定位：既是可以逐步执行的实验操作手册，也是解释原理、风险、验证方法和排障思路的培训文档。  
 > 适用环境：2018 Intel Mac mini 上由 UTM 运行 RouterOS CHR，Multipass 运行三台 Ubuntu/Kubernetes 节点。  
 > 实验项目：[sunweisheng/K8S-Deploying-Java](https://github.com/sunweisheng/K8S-Deploying-Java)，默认构建分支为 `main`。  
 > 当前正式基线：`K8S-Deploying-Java v1.0.8`，提交 `485a6e709d235e3c9b1dd0d673752a013c782d50`，项目位于仓库根目录；Tag、GitHub Release 和 JAR 已正式发布。  
 > 实际验证状态：21 个测试、JAR 构建、Rootless BuildKit 镜像与缓存推送、镜像摘要传递、Helm Revision 3、两个应用副本、PostgreSQL 17.10、HTTPS 页面和健康接口均已在本虚拟机环境通过；完整记录见第 2 节与附录 A。  
-> 配套方案：[查看云服务器方案](kubernetes-jenkins-buildkit-github-springboot3-postgresql-cloud-server-guide.md)。
+> 配套方案：[查看云服务器方案](./kubernetes-jenkins-buildkit-github-springboot3-postgresql-cloud-server-guide.md)。
+> 共用外部附件：[Kubernetes 与 Calico 网络运行机制](./kubernetes-calico-networking-principles.md)，集中解释 Operator、CNI、Felix、BGP、IPIP、Linux 路由和 RouterOS 的关系。
 
 ## 使用说明
 
 本手册只描述本地虚拟机路线。请从第一部分开始顺序执行，不要混入云服务器的 VPC、安全组、私有 IP 或 IPIP 配置。
+
+Calico 的共同原理不在两份操作手册中重复展开。开始网络安装前，先阅读共用外部附件 [Kubernetes 与 Calico 网络运行机制](./kubernetes-calico-networking-principles.md)；本手册正文只保留本地虚拟机参数、操作和验收步骤。
 
 作为实验操作手册，每个阶段都给出命令、预期结果和验收方法；作为培训文档，关键位置同时说明命令用途、参数含义、安全边界、常见错误和恢复办法。完成本手册后，应能解释并实际验证：
 
@@ -1279,6 +1282,8 @@ fi
 
 #### A.6.3 安装 Calico 并连接 RouterOS
 
+本节执行本地虚拟机方案的实际安装。CRD、Operator、CNI、Felix、BIRD、无封装路由与单网卡 RouterOS 的完整工作机制见共用外部附件 [Kubernetes 与 Calico 网络运行机制](./kubernetes-calico-networking-principles.md)。
+
 A.6.2 最后已经重新进入 `k8s-master`，本节继续在当前 `ubuntu@k8s-master:~$` 终端执行，不要退出到 Mac。
 
 下面两个 Calico YAML 位于 `raw.githubusercontent.com`。A.6.2.1 设置的是 containerd 服务代理，只负责拉取容器镜像，不会自动代理当前 Shell 中的 `kubectl create -f https://...` 请求。因此先用 Mac 代理把 YAML 下载到 master，再让 `kubectl` 从本地文件安装：
@@ -1396,6 +1401,56 @@ EOF
 ```
 
 `real-lan-no-nat` 的三个关键字段作用不同：`disabled: true` 禁止从这个地址池给 Pod 分配地址，`natOutgoing: false` 让该网段成为 Pod 出站 NAT 的排除目标，`disableBGPExport: true` 防止 Calico 把家庭局域网 `192.168.0.0/24` 发布给 RouterOS。三项都必须保留。
+
+#### A.6.3.1 为什么外网访问使用 NAT，而访问 Mac 代理不使用 NAT
+
+本机方案不是完全关闭 Pod 出站 NAT，而是采用“访问外网使用 NAT、访问家庭局域网不使用 NAT”的方式。
+
+主 Pod 地址池中：
+
+```yaml
+natOutgoing: Enabled
+```
+
+表示 Pod 访问 GitHub、GHCR、Docker Hub、Maven Central 等外部服务时，会先把源地址从 `10.244.x.x` 转换为所在 Kubernetes 节点当前出网网卡的地址。虚拟机的默认路由走 Multipass 管理网卡，因此外部服务不需要知道 Pod 网段，也不会直接看到 Pod 地址：
+
+```text
+Pod 10.244.x.x
+  -> Kubernetes 节点的 Multipass 管理网卡地址
+  -> Multipass 和 Mac 的出网链路
+  -> GitHub、GHCR 等外部服务
+```
+
+但本方案还创建了一个禁用的 `real-lan-no-nat` 地址池：
+
+```yaml
+cidr: 192.168.0.0/24
+disabled: true
+natOutgoing: false
+```
+
+它不会给 Pod 分配地址。它的作用是：当 Pod 访问家庭局域网 `192.168.0.0/24`，例如 Mac 上的代理 `192.168.0.5:7890` 时，保留 Pod 原始地址，不转换为节点地址：
+
+```text
+Pod 10.244.x.x
+  -> Mac 代理 192.168.0.5:7890
+Mac 代理看到的来源仍是 Pod 10.244.x.x
+```
+
+这样做是为了验证 RouterOS CHR 通过 BGP 学到的 Pod 路由确实可用。Mac 收到 Pod 的代理请求后，返回数据必须经由 CHR `192.168.0.2`，由 CHR 根据 BGP 路由送回实际承载该 Pod 的 Kubernetes 节点。因此 Mac 必须增加：
+
+```text
+10.244.0.0/16 -> 192.168.0.2
+```
+
+这不是把 Pod 暴露到互联网；Pod 地址只在本次家庭局域网实验中保留和可路由。
+
+如果目标只是让 Jenkins 和 BuildKit 通过 Mac 代理访问 GitHub、GHCR，而不需要验证“家庭局域网能够直接路由到 Pod 网段”，可以不设置这条局域网 NAT 排除规则。此时 Mac 看到的是节点私有 IP，通常也不需要增加 Pod 网段返回路由；但 RouterOS BGP 学习 Pod 路由的实验价值就没有在代理链路中得到验证。
+
+本指南保留 `real-lan-no-nat` 和 Mac 返回路由，是为了同时完成两项实验：
+
+1. 让 Pod 能通过 Mac 代理访问外部服务。
+2. 验证家庭局域网经 RouterOS CHR 可以正确返回 Pod 网段。
 
 旧版 IPPool 缺少 `disableBGPExport` 时，按附录 A 的一次性补救步骤处理。
 
