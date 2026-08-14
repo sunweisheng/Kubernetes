@@ -1,6 +1,6 @@
 # Kubernetes、Jenkins、BuildKit、GitHub、Spring Boot 3 与 PostgreSQL 部署攻略：云服务器方案
 
-> 更新时间：2026-08-13  
+> 更新时间：2026-08-14  
 > 文档定位：既是可以逐步执行的实验操作手册，也是解释原理、风险、验证方法和排障思路的培训文档。  
 > 适用环境：三台阿里云香港 ECS，位于同一 VPC、交换机和安全组，使用 Calico 节点间 BGP + IPIP。  
 > 实验项目：[sunweisheng/K8S-Deploying-Java](https://github.com/sunweisheng/K8S-Deploying-Java)，默认构建分支为 `main`。  
@@ -9,6 +9,7 @@
 > 临时环境说明：本次实测使用的公网地址为 `8.218.180.162`、`8.210.138.194`、`8.210.148.60`，对应私网地址为 `192.168.0.10`、`192.168.0.11`、`192.168.0.12`。这组三台 ECS 会在实验结束后删除，公网地址届时失效；以后重建时必须先按参数表替换真实地址，不能照抄本次公网地址。  
 > 配套方案：[查看本地虚拟机方案](./kubernetes-jenkins-buildkit-github-springboot3-postgresql-vm-guide.md)。
 > 共用外部附件：[Kubernetes 与 Calico 网络运行机制](./kubernetes-calico-networking-principles.md)，集中解释 Operator、CNI、Felix、BGP、IPIP、Linux 路由和 RouterOS 的关系。
+> Helm 学习附件：[Helm 与 Kubernetes 交互原理及使用指南](./helm-kubernetes-interaction-guide.md)，集中解释 Chart、Values、Template、Manifest、Kubernetes API 交互和 Release 版本记录；Helm 3 默认使用 Secret，而本方案的 Spring Boot Release 显式设置 `HELM_DRIVER=configmap`。
 
 ## 使用说明
 
@@ -353,6 +354,8 @@ ConfigMap/build-proxy
 Maven 和 Helm 不直接引用该 ConfigMap，但 `v3.2.0` 仍会通过 Agent 环境给它们注入默认空代理变量。以后云环境确实必须经过企业代理时，不能只更新 `ConfigMap/build-proxy`：还要通过项目配置给 `POD_HTTP_PROXY`、`POD_HTTPS_PROXY`、`POD_NO_PROXY` 提供同一组值，再创建新的 Agent Pod。两处值不一致时不要继续构建，避免不同容器走不同出口。
 
 ##### 4. Helm 如何使用 Chart 默认值和云端环境 values
+
+如果还不熟悉 Chart、Values、Template 和 Manifest 的关系，先阅读 [Helm 与 Kubernetes 交互原理及使用指南](./helm-kubernetes-interaction-guide.md)。该附件讲解 Helm 3 默认的 Secret 发布记录；本方案为了缩小 Jenkins 部署账号权限，显式使用 `HELM_DRIVER=configmap` 保存 Spring Boot Release 记录。
 
 应用 Chart 的默认域名和 TLS Secret 是虚拟机方案使用的 `app.k8s.lab` 和 `k8s-lab-tls`。项目 Agent YAML 给 Helm 容器挂载可选的 `ConfigMap/deploy-overrides`，`optional: true` 表示对象不存在时 Pod 仍能启动：
 

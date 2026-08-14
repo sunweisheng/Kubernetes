@@ -1,6 +1,6 @@
 # Kubernetes、Jenkins、BuildKit、GitHub、Spring Boot 3 与 PostgreSQL 部署攻略：虚拟机方案
 
-> 更新时间：2026-08-13  
+> 更新时间：2026-08-14  
 > 文档定位：既是可以逐步执行的实验操作手册，也是解释原理、风险、验证方法和排障思路的培训文档。  
 > 适用环境：2018 Intel Mac mini 上由 UTM 运行 RouterOS CHR，Multipass 运行三台 Ubuntu/Kubernetes 节点。  
 > 实验项目：[sunweisheng/K8S-Deploying-Java](https://github.com/sunweisheng/K8S-Deploying-Java)，默认构建分支为 `main`。  
@@ -8,6 +8,7 @@
 > 实际验证状态：21 个测试、JAR 构建、Rootless BuildKit 镜像与缓存推送、镜像摘要传递、Helm Revision 3、两个应用副本、PostgreSQL 17.10、HTTPS 页面和健康接口均已在本虚拟机环境通过；完整记录见第 2 节与附录 A。  
 > 配套方案：[查看云服务器方案](./kubernetes-jenkins-buildkit-github-springboot3-postgresql-cloud-server-guide.md)。
 > 共用外部附件：[Kubernetes 与 Calico 网络运行机制](./kubernetes-calico-networking-principles.md)，集中解释 Operator、CNI、Felix、BGP、IPIP、Linux 路由和 RouterOS 的关系。
+> Helm 学习附件：[Helm 与 Kubernetes 交互原理及使用指南](./helm-kubernetes-interaction-guide.md)，集中解释 Chart、Values、Template、Manifest、Kubernetes API 交互和 Release 版本记录；Helm 3 默认使用 Secret，而本方案的 Spring Boot Release 显式设置 `HELM_DRIVER=configmap`。
 
 ## 使用说明
 
@@ -343,6 +344,8 @@ ConfigMap/build-proxy
 `jnlp` 的 `configMapRef` 和 BuildKit 的 `configMapKeyRef` 都不是可选项，因此 `build-proxy` 不存在时 Pod 无法正常启动，其中任一代理键不存在时 BuildKit 会进入 `CreateContainerConfigError`。Maven 和 Helm 不读取该 ConfigMap；Maven 继续直连 Maven Central。
 
 ##### 4. Helm 如何使用 Chart 默认值和可选环境 values
+
+如果还不熟悉 Chart、Values、Template 和 Manifest 的关系，先阅读 [Helm 与 Kubernetes 交互原理及使用指南](./helm-kubernetes-interaction-guide.md)。该附件讲解 Helm 3 默认的 Secret 发布记录；本方案为了缩小 Jenkins 部署账号权限，显式使用 `HELM_DRIVER=configmap` 保存 Spring Boot Release 记录。
 
 应用的默认域名和 TLS Secret 由 `K8S-Deploying-Java/deploy/charts/spring-app/values.yaml` 定义：
 

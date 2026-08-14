@@ -13,3 +13,5 @@
 * [单独安装和使用Kubectl工具管理多个集群](Kubectl-Use.md)
 * [Kubernetes、Jenkins、BuildKit、GitHub、Spring Boot 3 与 PostgreSQL 部署攻略(虚拟机)](kubernetes-jenkins-buildkit-github-springboot3-postgresql-vm-guide.md)
 * [Kubernetes、Jenkins、BuildKit、GitHub、Spring Boot 3 与 PostgreSQL 部署攻略(云服务)](kubernetes-jenkins-buildkit-github-springboot3-postgresql-cloud-server-guide.md)
+* [Kubernetes 与 Calico 网络运行机制](kubernetes-calico-networking-principles.md)
+* [Helm 与 Kubernetes 交互原理及使用指南](helm-kubernetes-interaction-guide.md)
