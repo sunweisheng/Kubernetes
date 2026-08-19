@@ -15,3 +15,4 @@
 * [Kubernetes、Jenkins、BuildKit、GitHub、Spring Boot 3 与 PostgreSQL 部署攻略(云服务)](kubernetes-jenkins-buildkit-github-springboot3-postgresql-cloud-server-guide.md)
 * [Kubernetes 与 Calico 网络运行机制](kubernetes-calico-networking-principles.md)
 * [Helm 与 Kubernetes 交互原理及使用指南](helm-kubernetes-interaction-guide.md)
+* [同一项目的多环境 Helm Values 与构建结果指南](helm-multi-environment-values-guide.md)

@@ -378,6 +378,45 @@ ingress:
 }
 ```
 
+这里的 `deploy-overrides` 是“可选的环境差异输入”，不是完整的 Chart 配置，也不是把项目仓库里的 `values.yaml` 改掉。虚拟机方案不创建这个 ConfigMap，因此 `ci/prepare-helm-values.sh` 会生成内容为 `{}` 的空 values 文件，Helm 不会得到额外覆盖，直接使用 Chart 默认值：
+
+```yaml
+ingress:
+  host: app.k8s.lab
+  tlsSecret: k8s-lab-tls
+```
+
+如果以后在虚拟机中创建一个覆盖文件，例如：
+
+```yaml
+ingress:
+  host: app.test.k8s.lab
+```
+
+Helm 的结果只会把 `ingress.host` 改成 `app.test.k8s.lab`，`ingress.tlsSecret` 仍保留默认的 `k8s-lab-tls`。这就是“按同名键覆盖”，不是用覆盖文件替换整个 `values.yaml`。Chart 的 Ingress 模板必须读取 `.Values.ingress.host` 和 `.Values.ingress.tlsSecret`，这些键名才能产生作用；覆盖文件不是任意写一个同义字段就会自动生效：
+
+```text
+Chart 默认值
+  host      = app.k8s.lab
+  tlsSecret = k8s-lab-tls
+        +
+覆盖文件只写 host
+  host      = app.test.k8s.lab
+        │合并
+        ▼
+本次渲染结果
+  host      = app.test.k8s.lab
+  tlsSecret = k8s-lab-tls
+```
+
+这三个位置要分开理解：
+
+1. `deploy-overrides-values.yaml`（如果创建）是 master 上的普通文件。
+2. `ConfigMap/deploy-overrides` 是 Kubernetes 中的可选配置对象，通常把文件内容保存为 `values.yaml` 数据键，并由 Agent YAML 挂载。
+3. `${HELM_OVERRIDE_VALUES_FILE}` 是临时 Agent Pod 内的文件路径；`prepare-helm-values.sh` 从挂载目录复制它，ConfigMap 不存在时写入 `{}`。Helm 的 `valuesFiles` 读取的是这个 Agent 内路径，不是 master 上的普通文件。
+
+因此，虚拟机方案删除 `ConfigMap/deploy-overrides` 后，默认域名和 TLS Secret 会恢复为 `app.k8s.lab` 与 `k8s-lab-tls`；这不会修改 Chart 源码，也不会删除 TLS Secret。只有新创建的 Agent Pod 和后续 Helm 渲染会使用当前覆盖状态。
+
 因此合并顺序是“Chart 默认值 → 可选环境 values → 本次构建的镜像仓库和摘要”。环境 values 只写 `ingress.host` 时只替换域名，只写 `ingress.tlsSecret` 时只替换 TLS Secret，两者不要求同时出现。镜像仓库和经过校验的摘要最后由流水线强制覆盖，环境 ConfigMap 不能改变本次构建要部署的镜像。虚拟机默认流程不创建 `deploy-overrides`，正好直接使用 Chart 中的 `app.k8s.lab` 和 `k8s-lab-tls`。
 
 ##### 5. BuildKit 如何执行构建、缓存和推送
@@ -2034,6 +2073,7 @@ StorageClass 只负责分类和绑定规则，不是 NFS 服务，也不保存�
 PV 中几个容易混淆的字段需要单独理解：
 
 - `capacity.storage` 是提供给 Kubernetes 进行匹配的容量声明，不会给 NFS 目录创建磁盘配额，也不会在 master 磁盘上提前划出一块独占空间。
+- 本方案的 `POSTGRESQL_PV_SIZE=10Gi` 会渲染为 PV 的 `capacity.storage: 10Gi`。`Gi` 是 Kubernetes 使用的二进制容量单位；这个值表示 PV 以 10Gi 的容量参加绑定判断，不表示 NFS 目录已经被划出一个固定的 10Gi 分区。
 - `volumeMode: Filesystem` 表示应用看到的是普通文件系统目录，不是直接使用一块裸磁盘。
 - `accessModes: ReadWriteMany` 表示这个卷允许被多个节点以读写方式挂载，符合 NFS 的使用方式。它不是 Linux 文件权限，不能替代目录属主、权限位和 NFS 导出规则；它也不代表 PostgreSQL 可以启动多个实例同时写同一数据目录。
 - `storageClassName: nfs-static` 把 PV 放入前面创建的静态 NFS 类别。
@@ -2062,6 +2102,8 @@ PV 中几个容易混淆的字段需要单独理解：
 5. PV 当前处于 `Available`，没有被其他 PVC 占用。
 
 本方案为每个 PV 声明 `10Gi`，每个 PVC 申请 `8Gi`，所以容量条件满足。多出的声明容量不会被另一个 PVC 继续使用：一个 PV 与一个 PVC 绑定后，这个 PV 就被该 PVC 占用。
+
+这里的 `10Gi` 和 `8Gi` 是 Kubernetes API 中的“提供容量”和“申请容量”：Kubernetes 会比较 PV 的容量是否不小于 PVC 的申请量，同时检查 `storageClassName`、标签选择器、访问模式和卷模式。对于本方案的静态 NFS，绑定过程不会实际检查 NFS 目录剩余空间，也不会给目录自动设置 10Gi 配额。因此，即使 PVC 显示 `Bound`，也不能单独证明 NFS 磁盘还有 8Gi 可写空间；真实可用空间仍由 NFS 服务端的文件系统、磁盘和配额决定。反过来，NFS 目录也可能实际使用超过 10Gi，因为 `capacity.storage` 本身不是硬性限额。
 
 PVC 中没有直接填写 NFS 地址和目录。这样后续 Jenkins 或 PostgreSQL 只需要引用各自的 PVC 名称，不需要知道底层 NFS 放在哪里。以后更换存储时，应用配置仍可继续使用原来的 PVC 名称，但管理员还必须单独制定数据迁移以及 PV/PVC 重建步骤，不能直接修改正在使用的 PV 地址。
 
@@ -2463,6 +2505,49 @@ unset POSTGRESQL_CHART_DIR
 - PostgreSQL Service 没有 `NodePort`，局域网不能直接连接数据库。
 - `helm -n spring-app history postgresql` 能看到发布历史。
 
+#### 8.1 `resources` 如何从 `values.yaml` 渲染到 StatefulSet
+
+`values.yaml` 中的 `resources` 是一个配置对象，当前内容为：
+
+```yaml
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi
+```
+
+模板中的下面两行负责把这个对象放进容器的 `resources` 字段：
+
+```yaml
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+```
+
+这里分三步理解：
+
+1. `.Values.resources` 读取 `values.yaml` 中的 `resources` 对象，不包含最外层的 `resources:` 名称。
+2. `toYaml` 把这个对象转换成 YAML 文本，也就是 `requests`、`limits` 以及它们下面的 CPU 和内存配置。
+3. `indent 12` 给生成文本的每一行增加 12 个空格，使它落在 `resources:` 的下一层。
+
+渲染后的结构等价于：
+
+```yaml
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+```
+
+`resources:` 位于容器字段层级，使用 10 个空格；`requests:` 和 `limits:` 需要再向右一级，所以使用 12 个空格；`cpu` 和 `memory` 再向右一级，使用 14 个空格。这里的缩进是 YAML 结构的一部分，不能把 `indent 12` 改成其他数值。
+
+这段配置只控制容器的 CPU 和内存，不控制 PostgreSQL 数据目录的磁盘容量。资源数值放在 `values.yaml`，因此以后调整资源时只改配置文件，不需要改 StatefulSet 模板。
+
 ### 9. 安装 Jenkins
 
 除非小节明确写着“在 Mac”或“打开浏览器”，第 9 节所有 Bash 命令都在 `k8s-master` 执行。包含 `cat > ... <<'EOF'` 的代码块就是文件创建命令，应从 `cat` 到最后一行 `EOF` 整段复制执行，不需要打开编辑器。
@@ -2678,6 +2763,18 @@ kubectl -n "$CI_NAMESPACE" rollout status statefulset/jenkins --timeout=10m
 - Jenkins Service 为 `ClusterIP`，Ingress 由 Jenkins Helm Release 创建；完成 Traefik 和 TLS Secret 后再用域名访问。
 - Jenkins Controller 的执行器数量为 0，构建只能在临时 Agent Pod 中运行。
 
+##### 9.3 配置中的几个 Jenkins 专用概念
+
+`controller.admin.existingSecret: jenkins-admin` 表示 Jenkins 使用第 9.2 节已经创建的管理员 Secret。Jenkins Chart 只有在 `existingSecret` 为空且 `createSecret: true` 时，才会按照 `admin.username` 和 `admin.password` 创建自己的 Secret；本虚拟机方案设置 `createSecret: false`，因此 Chart 不会创建或覆盖 `jenkins-admin`。管理员用户名和密码仍然只来自第 9.2 节创建的 Secret，不要写进 values 文件。
+
+JCasC 是 Jenkins 的 `Configuration as Code` 插件和配置方式，不是 Kubernetes 控制器，也不是独立 Pod。`installPlugins` 中的 `configuration-as-code` 插件运行在 Jenkins Controller 内部；Helm Chart 把 `JCasC.defaultConfig` 和 `configScripts` 生成 ConfigMap 并挂载到 Controller，JCasC 插件在 Jenkins 启动时读取这些 YAML，配置 Jenkins 自己的 Kubernetes Cloud、GitHub 设置和 Remoting 安全。它不负责创建 Kubernetes 的 Ingress、Service、Role 或 Pod，那些对象仍由 Helm Chart 和 Kubernetes 处理。
+
+本虚拟机 values 中的 `configScripts` 只有 `github-api-usage`，用于固定 GitHub API 使用策略；共享类库不在这段 JCasC 中创建，后续按本文页面配置步骤登记。JCasC 的 `configScripts` 使用 YAML 的 `|` 多行字符串，缩进内容会作为独立的 Jenkins 配置文件提交。修改这些配置后，当前 `sidecars.configAutoReload.enabled: false` 不会实时刷新，下一次 Helm 更新或 Jenkins 重启时才会重新加载。
+
+GitHub API 限流策略可以不配置，不影响 Git clone 或 Jenkins 的基本启动；但 Multibranch Pipeline 扫描还会调用 GitHub API 查询仓库、分支和 Jenkinsfile。请求过多时 GitHub 会返回限额或二次限流错误。`ThrottleOnOver` 让 Jenkins 接近限额时主动放慢 API 请求，保护后续扫描和其他任务使用配额。它不是增加 GitHub 配额，也不是限制网络带宽。当前只有一个公开实验仓库时可以去掉，去掉后仍应只手工扫描一次并观察 GitHub API 错误。
+
+Sidecar 是和 Jenkins Controller 在同一个 Pod 中并行运行的辅助容器，不是 initContainer，也不是独立的 Jenkins 服务。Jenkins Chart 的 `sidecars.configAutoReload` Sidecar 会监视 JCasC ConfigMap 变化并请求 Jenkins 重新加载配置。本方案设置 `enabled: false`，所以不创建这个额外容器，不自动实时重载 JCasC，也不需要为 Sidecar 增加读取 ConfigMap 的 Role。
+
 #### 9.3.1 确认 Jenkins 可以创建 Agent Pod
 
 Jenkins 在 Kubernetes 中创建临时 Agent Pod，需要同时具备“连接配置”和“Kubernetes 权限”。本文已经在 `jenkins-values.yaml` 中完成，不需要再到 Jenkins 页面手工填写 Kubernetes API 地址、证书或 Token：
@@ -2690,6 +2787,12 @@ Jenkins 在 Kubernetes 中创建临时 Agent Pod，需要同时具备“连接�
 - `agent.restrictedPssSecurityContext: true`：Kubernetes 插件给所有 Agent 容器补 `runAsNonRoot: true`、禁止提权、删除 capabilities 和 `RuntimeDefault` seccomp；它不会自动选择数字 UID/GID。
 - `agent.runAsUser/runAsGroup: 1000`：让 Chart 自带的默认 PodTemplate 使用数字身份。项目流水线通过 `podTemplate(yaml: ...)` 创建动态 Pod，不可靠继承该默认模板，因此固定项目 `v1.0.8` 还在自己的 Pod YAML 中设置 Pod 级数字 UID/GID 和 `fsGroup`。
 - `controller.containerEnv`：只保存 Jenkins Controller 自己访问外部服务需要的代理变量，不再保存应用域名或 TLS Secret。应用部署差异属于目标 Kubernetes 环境，由第 11 节的可选 `ConfigMap/deploy-overrides` 提供；本虚拟机方案不创建它，直接使用 Chart 默认值。
+
+`rbac.create: true` 创建的是 `ci` 命名空间内的 Role 和 RoleBinding，不是集群管理员权限。Chart `5.9.49` 的 Role 主要允许 Controller ServiceAccount 在 Agent 命名空间中对 `pods`、`pods/exec`、`pods/log`、`persistentvolumeclaims` 和 `events` 执行查看操作，并对 `pods`、`pods/exec` 和 `persistentvolumeclaims` 执行创建、修改和删除操作。它不能直接创建 Deployment、Service、Ingress、Namespace 或集群级 PV，也不能直接读取 Secret，因为 `rbac.readSecrets: false` 没有授予 Secret 的 `get/list/watch` 权限。
+
+这组 Role 不会按镜像名称、镜像仓库或镜像摘要限制 Pod。换句话说，从 RBAC 角度，Controller 可以提交使用其他镜像的 Pod；`agent.image` 和 `privileged: false` 只是默认 Agent 模板，不是镜像白名单或所有未来 Pod 的绝对安全边界。最终是否允许创建，还会受到 Pod Security Admission、其他准入策略、镜像拉取和节点约束影响。当前实验假设 Jenkinsfile 和仓库受控，不是多租户不可信构建隔离方案。
+
+`readSecrets: false` 只禁止直接查询 Secret API，不等于完全阻止由 Jenkins 创建的 Pod 间接接触 Secret。能够创建 Pod 的身份在某些配置下可能尝试引用 Secret 卷，因此生产环境还应结合独立命名空间、Pod 安全策略、镜像白名单、NetworkPolicy 和受控流水线来源进一步限制。这里的 `jenkins` 是 Controller 创建 Agent Pod 的身份；它与 Agent 容器中用于部署应用的 `jenkins-deployer` 不是同一个 ServiceAccount，也不应互相替代。
 
 这里要区分两个配置层次：Chart 的 `agent.runAsUser/runAsGroup` 保护 Chart 默认 Agent；项目 Pod 的 `spec.securityContext` 才直接控制本次流水线。不能只在 Helm values 中增加 UID 后，就删掉项目 YAML 中的 Pod 级身份。
 
@@ -2837,6 +2940,10 @@ kubectl get ingressclass traefik
 
 Traefik 是唯一使用 NodePort 的业务入口。Jenkins、Spring Boot 和 Headlamp 自己的 Service 都保持 `ClusterIP`。
 
+这里要区分三个对象：`Service/jenkins` 是集群内部的后端入口；Jenkins Helm Chart 的 `controller.ingress.enabled: true` 只是创建一个标准 Kubernetes `Ingress` 对象；Traefik 是单独安装的 Ingress Controller，负责监听 NodePort、读取 `ingressClassName: traefik` 的 Ingress 规则并实际转发请求。Ingress 不会自己监听端口，也不会自动安装 Traefik。
+
+一次 Jenkins HTTPS 请求的路径是：Mac 浏览器通过 `/etc/hosts` 将域名指向入口节点的 `30443` NodePort，Traefik 接收 HTTPS 并使用 Ingress 引用的 TLS Secret 完成证书处理；Traefik 再按 `hostName` 和 `/` 的 `Prefix` 规则，把请求转给 `ci` 命名空间的 `jenkins` ClusterIP Service:8080，Service 最后选择 Jenkins Controller Pod。TLS Secret 必须和 Ingress 在同一个命名空间。没有 Traefik、IngressClass 不匹配、TLS Secret 不存在或 Service 没有后端时，Ingress 对象仍可能存在，但访问链路不会成功。
+
 #### 9.5 创建本地 TLS 证书和 Kubernetes TLS Secret
 
 本实验使用本地 CA 签发 `*.k8s.lab` 证书。为了以后删除并重建虚拟机时复用同一套证书，首次生成后把 CA 证书、CA 私钥、通配符证书和通配符私钥一起备份到 Mac 的受保护目录 `~/.k8s-lab-pki`。私钥不提交 Git、不发送到聊天，也不放入 iCloud 或其他网盘同步目录。
@@ -2906,6 +3013,178 @@ openssl verify \
 unset TLS_DIR
 ```
 
+##### 第 1 段证书生成脚本逐行解释
+
+这一段不是向公网证书机构购买证书，而是在 `k8s-master` 本地建立一套只供本实验使用的“小型证书机构”。它先创建一张可以签发证书的本地 CA，再用这张 CA 为 Jenkins、Spring Boot 和 Headlamp 的 HTTPS 入口签发一张服务器证书。Mac 信任 `k8s-lab-ca.crt` 后，浏览器才会信任由它签发的 `wildcard-k8s-lab.crt`。
+
+可以先记住这条关系：
+
+```text
+CA 私钥 + CA 证书
+       │签名
+       ▼
+服务器私钥 + CSR + 域名配置  ──>  wildcard-k8s-lab.crt
+```
+
+其中，CA 私钥是“签发权”；服务器私钥是 Traefik 解密 HTTPS 流量时使用的私钥；服务器证书是发给访问者看的身份证；CSR 是申请签发服务器证书的中间文件。Kubernetes TLS Secret 最终只需要服务器证书和服务器私钥，不需要 CSR；Mac 需要信任 CA 证书，不需要把 CA 私钥放进 Kubernetes。
+
+**1. 读取环境变量并准备私密目录**
+
+```bash
+source "$HOME/k8s-platform/platform.env"
+TLS_DIR="$HOME/k8s-platform/tls"
+mkdir -p "$TLS_DIR"
+chmod 700 "$TLS_DIR"
+umask 077
+```
+
+- `source` 是 Bash 的内置命令，表示在当前终端读取并执行 `platform.env`。本段后面的 `${JENKINS_HOST}`、`${APP_HOST}` 和 `${HEADLAMP_HOST}` 都依赖这个文件；如果这些变量没有值，证书可能缺少正确的域名。它不是读取 Kubernetes Secret，也不是把配置上传到虚拟机之外。
+- `TLS_DIR` 只是当前 Shell 中的路径变量，指向证书目录。虚拟机示例中的 `$HOME` 通常是 `/home/ubuntu`，所以最终目录类似 `/home/ubuntu/k8s-platform/tls`。
+- `mkdir -p` 创建目录；目录已经存在时不会报错，所以重试脚本不会因为目录存在而停止。
+- `chmod 700` 让目录所有者可以读、写、进入目录，其他用户没有任何权限。目录权限很重要，因为里面会放 CA 私钥和服务器私钥。
+- `umask 077` 是本次 Shell 后续创建文件时的默认权限限制。新文件默认只允许当前用户读写，避免私钥刚生成时就对同一台虚拟机上的其他用户开放。它不会改变已经存在文件的权限。
+
+**2. 创建本地根 CA**
+
+```bash
+openssl genrsa -out "$TLS_DIR/k8s-lab-ca.key" 4096
+openssl req -x509 -new -sha256 -days 3650 \
+  -key "$TLS_DIR/k8s-lab-ca.key" \
+  -subj '/CN=K8S Lab Local CA' \
+  -out "$TLS_DIR/k8s-lab-ca.crt"
+```
+
+- `openssl genrsa ... 4096` 生成 4096 位 RSA 私钥，保存为 `k8s-lab-ca.key`。这是真正的签发权：任何拿到它的人，都可以为其他域名签发一张看起来由本实验 CA 签发的证书。因此它不能提交 Git、不能发到聊天，也不应放进 Kubernetes Secret。
+- `openssl req -x509` 直接生成一张自签名 X.509 证书。通常 `req` 用来生成 CSR；加上 `-x509` 后，这里生成的是 CA 自己签给自己的根证书。
+- `-new` 表示创建新的证书请求内容，`-sha256` 指定 SHA-256 摘要算法，`-days 3650` 让这张实验 CA 有效约 10 年。
+- `-key` 指定刚才生成的 CA 私钥；`-subj` 直接填写主题名称，所以脚本执行时不会进入交互式提问；`-out` 将公开的 CA 证书写入 `k8s-lab-ca.crt`。
+- `k8s-lab-ca.crt` 是 Mac 需要信任的“根证书”。它的 `CN` 只是这张 CA 的名称，不是 Jenkins 的访问域名；服务器域名会在下一段的 SAN 中写入服务器证书。
+
+**3. 生成服务器证书的配置文件**
+
+```bash
+cat > "$TLS_DIR/wildcard-k8s-lab.cnf" <<EOF
+...
+EOF
+```
+
+这里故意使用没有引号的 `<<EOF`。Shell 会先把 `${JENKINS_HOST}`、`${APP_HOST}` 和 `${HEADLAMP_HOST}` 替换成 `platform.env` 中的真实值，再把完整配置写入 `.cnf` 文件。如果写成 `<<'EOF'`，这些变量会原样写入文件，证书就不会包含实际域名。
+
+配置文件各部分的作用如下：
+
+| 配置 | 作用 |
+| --- | --- |
+| `[req]` | 告诉 OpenSSL 生成请求时使用哪些配置；`prompt = no` 表示不逐项提问；`distinguished_name = dn` 指向主题名称段；`req_extensions = req_ext` 表示把 `req_ext` 中的扩展写进 CSR。 |
+| `[dn]` 的 `CN` | 设置证书主题的通用名称。这里写 `*.k8s.lab`，主要用于展示和兼容旧客户端。现代浏览器主要依据 SAN 判断域名。 |
+| `[req_ext]` | 定义证书扩展。`subjectAltName = @alt_names` 表示从下面的 `[alt_names]` 读取实际可访问域名；`keyUsage` 允许签名和密钥交换；`extendedKeyUsage = serverAuth` 表示证书用于 HTTPS 服务器身份。`critical` 表示必须理解 `keyUsage`，否则验证方应拒绝使用。 |
+| `[alt_names]` | 列出浏览器真正要匹配的域名。通配符 `*.k8s.lab` 可以覆盖 `jenkins.k8s.lab`、`app.k8s.lab` 和 `headlamp.k8s.lab` 这一层；三个 `DNS.2` 到 `DNS.4` 又把当前实际主机名明确写入证书。 |
+
+通配符只匹配一个左侧标签：它可以匹配 `jenkins.k8s.lab`，但不能匹配 `api.jenkins.k8s.lab`，也不能匹配裸域名 `k8s.lab`。因此域名改动后，必须重新生成包含新域名的证书；不能只修改 Mac 的 `/etc/hosts`。
+
+**4. 生成服务器私钥和 CSR**
+
+```bash
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout "$TLS_DIR/wildcard-k8s-lab.key" \
+  -out "$TLS_DIR/wildcard-k8s-lab.csr" \
+  -config "$TLS_DIR/wildcard-k8s-lab.cnf"
+```
+
+- `-new` 创建新的证书请求；`-newkey rsa:2048` 同时生成一把 2048 位 RSA 服务器私钥。
+- `-keyout` 保存服务器私钥，`-out` 保存 CSR。CSR 只是一份“请 CA 为这把公钥和这些域名签名”的申请文件，还不是浏览器可以使用的最终证书。
+- `-config` 让 CSR 使用前面写入的 CN、SAN 和用途扩展。
+- `-nodes` 表示私钥不再额外用密码加密。这样 Traefik 启动时才能无人值守地读取 Kubernetes TLS Secret；代价是文件本身必须依靠目录 `700`、文件权限 `600` 和 Kubernetes Secret 权限来保护。这里的 `-nodes` 不表示私钥没有安全性，而是表示安全重点从“每次启动输入密码”转为“严格保护私钥文件和 Secret”。
+
+**5. 用本地 CA 签发服务器证书**
+
+```bash
+openssl x509 -req -sha256 -days 825 \
+  -in "$TLS_DIR/wildcard-k8s-lab.csr" \
+  -CA "$TLS_DIR/k8s-lab-ca.crt" \
+  -CAkey "$TLS_DIR/k8s-lab-ca.key" \
+  -CAcreateserial \
+  -extensions req_ext \
+  -extfile "$TLS_DIR/wildcard-k8s-lab.cnf" \
+  -out "$TLS_DIR/wildcard-k8s-lab.crt"
+```
+
+- `x509 -req` 表示输入是 CSR，并把它签成 X.509 服务器证书。
+- `-in` 指定刚生成的 CSR；`-CA` 和 `-CAkey` 分别指定用于签名的 CA 公钥证书和 CA 私钥。只有持有 CA 私钥的人才能完成这一步。
+- `-days 825` 让服务器证书有效 825 天，实验环境中不用频繁续期；这不是永久有效期，过期后浏览器会拒绝访问。
+- `-extensions req_ext -extfile ...` 把 `.cnf` 中的 SAN、密钥用途和服务器认证用途真正写入最终证书。只写 CN 而不写 SAN，现代浏览器通常仍会报告域名不匹配。
+- `-CAcreateserial` 为这次签发创建或使用 CA 序列号文件，通常会留下 `k8s-lab-ca.srl`。它用于给每张签发证书分配不同的序列号，不是私钥，也不会被 Traefik 读取。
+- `-out` 生成最终的 `wildcard-k8s-lab.crt`。它和同名 `.key` 配对，之后会作为 TLS Secret 的 `tls.crt` 和 `tls.key`。
+
+CA 的有效期约 10 年，服务器证书的有效期约 825 天。服务器证书到期时可以用同一 CA 重新签发；如果 CA 私钥泄露，则不能只换服务器证书，必须重新建立 CA 并重新让 Mac 信任新的 CA。
+
+**6. 验证证书链并清理变量**
+
+```bash
+openssl verify \
+  -CAfile "$TLS_DIR/k8s-lab-ca.crt" \
+  "$TLS_DIR/wildcard-k8s-lab.crt"
+unset TLS_DIR
+```
+
+- `openssl verify` 使用 `-CAfile` 指定信任根 CA，然后检查服务器证书是否能由这张 CA 正确验证。输出 `...wildcard-k8s-lab.crt: OK` 表示签名链和证书基本有效。
+- 这条命令主要验证“证书是不是这张 CA 签的、时间是否有效”。它不模拟浏览器完整访问，不检查 Traefik 是否已加载 Secret，也不检查域名是否匹配。真实 HTTPS 验收仍由后面的 `curl` 和浏览器完成；若要查看 SAN，可另外执行 `openssl x509 -in ... -noout -subject -issuer -dates -ext subjectAltName`。
+- `unset TLS_DIR` 只删除当前 Shell 中的路径变量，不删除任何证书文件。它避免后续命令误用这个临时变量；`platform.env` 中已经加载的其他变量不受影响。
+
+这一段执行完成后，目录中主要会有以下文件：
+
+| 文件 | 用途 | 后续去向 |
+| --- | --- | --- |
+| `k8s-lab-ca.key` | 本地 CA 私钥，具有签发权 | 只受保护地备份，不放进 Kubernetes。 |
+| `k8s-lab-ca.crt` | 本地 CA 公钥证书 | 导入 Mac 的信任库，也可作为备份。 |
+| `wildcard-k8s-lab.key` | Traefik 解密 HTTPS 的服务器私钥 | 作为 Kubernetes TLS Secret 的 `tls.key`。 |
+| `wildcard-k8s-lab.csr` | 服务器证书申请文件 | 签发完成后只作排查依据，不上传到 Kubernetes。 |
+| `wildcard-k8s-lab.crt` | 由本地 CA 签发的服务器证书 | 作为 Kubernetes TLS Secret 的 `tls.crt`。 |
+| `wildcard-k8s-lab.cnf`、`k8s-lab-ca.srl` | 证书扩展配置和序列号记录 | 便于排查或再次签发，不能代替私钥和证书。 |
+
+这些文件不是彼此独立的，它们按下面的顺序产生和使用：
+
+```text
+① k8s-lab-ca.key
+        │自签名
+        ▼
+   k8s-lab-ca.crt
+   （Mac 信任它）
+
+② wildcard-k8s-lab.cnf + wildcard-k8s-lab.key
+        │生成证书申请
+        ▼
+   wildcard-k8s-lab.csr
+
+③ k8s-lab-ca.key + k8s-lab-ca.crt
+  + wildcard-k8s-lab.csr + wildcard-k8s-lab.cnf
+        │CA 签名
+        ▼
+   wildcard-k8s-lab.crt
+
+④ wildcard-k8s-lab.crt + wildcard-k8s-lab.key
+        │kubectl create secret tls
+        ▼
+   各命名空间中的 TLS Secret
+        │Traefik 读取
+        ▼
+   Jenkins / Spring Boot / Headlamp 的 HTTPS
+```
+
+第 ① 步中，`k8s-lab-ca.crt` 是 CA 的公钥证书，Mac 导入并信任它；`k8s-lab-ca.key` 是 CA 私钥，留在签发端，具有签发权。两者共同形成“谁签发了服务器证书”的信任关系，但只有 CA 私钥能签名，CA 证书本身不能签发证书。
+
+`wildcard-k8s-lab.key` 是服务器私钥。生成 CSR 时，OpenSSL 会把与它对应的服务器公钥和域名申请信息放入 `wildcard-k8s-lab.csr`，并用服务器私钥证明这份申请确实由私钥持有者发起。CA 使用自己的 `k8s-lab-ca.key` 对 CSR 签名后，才得到 `wildcard-k8s-lab.crt`。因此，`wildcard-k8s-lab.crt` 必须和 `wildcard-k8s-lab.key` 成对使用；换成另一把私钥，Traefik 会无法完成 TLS 握手。
+
+`wildcard-k8s-lab.cnf` 不是证书，而是生成证书时使用的“申请表模板”：它告诉 OpenSSL 把哪些域名写进 SAN、证书用于什么场景以及允许哪些密钥用途。`k8s-lab-ca.srl` 也不是证书，它只是 CA 签发证书时记录序列号的辅助文件。它们不会被 Traefik 读取，也不会放入 TLS Secret；以后需要按相同规则重新签发证书时，`.cnf` 可以继续参考。
+
+真正运行 HTTPS 时，CA 私钥不会参与每一次访问。访问链路是：
+
+1. Mac 浏览器访问 `https://jenkins.k8s.lab:30443`，并在 TLS 握手中告诉 Traefik 要访问的主机名。
+2. Traefik 从当前命名空间的 TLS Secret 读取 `wildcard-k8s-lab.crt` 和 `wildcard-k8s-lab.key`，用证书说明自己的身份，并用私钥证明自己确实拥有这张证书对应的私钥。
+3. 浏览器检查证书的 SAN 是否包含 `jenkins.k8s.lab`，再检查签发者是否是自己已经信任的 `k8s-lab-ca.crt`。
+4. 两边完成校验后，浏览器和 Traefik 协商出加密会话；Traefik 再把请求转给 Jenkins Service。
+
+第 2 段命令把同一对 `wildcard-k8s-lab.crt` 和 `wildcard-k8s-lab.key` 分别复制到 `ci`、`spring-app` 和 `headlamp` 命名空间，是因为 Kubernetes 的 Ingress 只能引用自己所在命名空间的 Secret。三个 Secret 内容相同，但对象彼此独立；删除其中一个不会删除另外两个。`k8s-lab-ca.crt` 不需要放入这三个 TLS Secret，它只需要导入 Mac 的信任库。
+
 成功时最后应输出类似 `/home/ubuntu/k8s-platform/tls/wildcard-k8s-lab.crt: OK`。重新出现 `ubuntu@k8s-master:~$` 后再执行第 2 段。
 
 第 2 段：继续在 `k8s-master` 整段执行。它把同一张证书分别存入三个命名空间，因为 Ingress 只能引用与自己同命名空间的 Secret：
@@ -2921,6 +3200,91 @@ for namespace in "$CI_NAMESPACE" "$APP_NAMESPACE" "$HEADLAMP_NAMESPACE"; do
 done
 unset TLS_DIR
 ```
+
+##### 第 2 段创建 Kubernetes TLS Secret 的命令解释
+
+第 1 段生成的是文件；第 2 段才是把服务器证书和服务器私钥登记到 Kubernetes。它不会重新生成证书，也不会把 CA 私钥放进集群，而是把同一对 `wildcard-k8s-lab.crt` 和 `wildcard-k8s-lab.key` 分别创建为三个命名空间中的 TLS Secret。
+
+**1. 读取配置并设置证书目录**
+
+```bash
+source "$HOME/k8s-platform/platform.env"
+TLS_DIR="$HOME/k8s-platform/tls"
+```
+
+- `source` 把 `platform.env` 中的 `CI_NAMESPACE`、`APP_NAMESPACE`、`HEADLAMP_NAMESPACE` 和 `TLS_SECRET_NAME` 读入当前 Shell。当前虚拟机方案中它们分别指向 `ci`、`spring-app`、`headlamp` 和同一个 TLS Secret 名称。
+- `TLS_DIR` 指向第 1 段生成证书的目录。这里使用变量，是为了避免在后面每条命令中重复写 `/home/ubuntu/k8s-platform/tls`。
+- 如果这些变量没有正确加载，`kubectl -n` 可能收到空命名空间，或者 Secret 名称不一致。因此这段命令必须在已经准备好 `platform.env` 的 `k8s-master` 上执行。
+
+**2. 用 `for` 循环处理三个命名空间**
+
+下面的代码框只是语法片段，用于解释循环结构，不能单独执行；实际执行仍使用上面的完整命令。
+
+```bash
+for namespace in "$CI_NAMESPACE" "$APP_NAMESPACE" "$HEADLAMP_NAMESPACE"; do
+  ...
+done
+```
+
+`for` 会依次把三个命名空间名称放入临时变量 `namespace`：第一次是 `ci`，第二次是 `spring-app`，第三次是 `headlamp`。所以循环体中的 `kubectl` 实际执行三次。三个命名空间不能共用同一个 Secret 对象，因为 Kubernetes 的 Secret 是命名空间级资源；Jenkins Ingress 只能引用 `ci` 中的 Secret，应用 Ingress 只能引用 `spring-app` 中的 Secret，Headlamp Ingress 只能引用 `headlamp` 中的 Secret。三个 Secret 的内容相同，但对象彼此独立。
+
+这段命令没有设置 `set -e`：如果某一个命名空间创建失败，Shell 可能继续尝试后面的命名空间。因此看到任何一行错误时，都应先停下来检查命名空间、文件路径和权限，不要只看最后一行输出。
+
+**3. `kubectl create secret tls` 做什么**
+
+```bash
+kubectl -n "$namespace" create secret tls "$TLS_SECRET_NAME" \
+  --cert="$TLS_DIR/wildcard-k8s-lab.crt" \
+  --key="$TLS_DIR/wildcard-k8s-lab.key"
+```
+
+- `-n "$namespace"` 指定这次操作的目标命名空间。
+- `create secret tls` 表示创建一个 TLS 类型的 Secret，Kubernetes 类型通常显示为 `kubernetes.io/tls`。它不是创建证书，而是读取已经存在的证书文件并封装成 Kubernetes 对象。
+- `"$TLS_SECRET_NAME"` 是对象名称，例如 `k8s-lab-tls`。同一个名称可以同时存在于三个不同命名空间，因为名称的唯一范围是“命名空间内”。
+- `--cert` 指向服务器证书 `wildcard-k8s-lab.crt`，写入 Secret 的 `tls.crt` 字段。
+- `--key` 指向与证书匹配的服务器私钥 `wildcard-k8s-lab.key`，写入 Secret 的 `tls.key` 字段。
+- CA 证书 `k8s-lab-ca.crt`、CA 私钥、CSR、`.cnf` 和 `.srl` 都不属于这个 TLS Secret。CA 证书由 Mac 的信任库使用，CA 私钥只用于将来签发证书。
+
+生成出的对象可以抽象成下面这样，实际的证书内容会被 Kubernetes 以 Base64 形式保存：
+
+```yaml
+type: kubernetes.io/tls
+data:
+  tls.crt: <wildcard-k8s-lab.crt 的 Base64 内容>
+  tls.key: <wildcard-k8s-lab.key 的 Base64 内容>
+```
+
+Base64 只是传输和 YAML 表示方式，不是加密。谁有权限读取这个 Secret，谁就可能得到服务器私钥，所以仍然要依靠命名空间权限、RBAC 和 etcd 加密策略保护它。
+
+**4. 为什么使用 `--dry-run=client -o yaml | kubectl apply -f -`**
+
+下面是参数片段，用于解释管道含义，不能单独执行；实际执行仍使用上面的完整命令。
+
+```bash
+--dry-run=client -o yaml | kubectl apply -f -
+```
+
+这三部分连在一起看：
+
+1. `--dry-run=client` 要求第一个 `kubectl` 只在本机根据证书文件生成对象，不直接向 Kubernetes API 创建资源。这里的 `client` 很重要，表示客户端模拟，不是服务器端检查。
+2. `-o yaml` 把本机生成的 Secret 对象输出成 YAML，而不是马上发送出去。
+3. 管道符 `|` 把前一个命令的 YAML 输出交给后一个命令。
+4. `kubectl apply -f -` 中的 `-` 表示从标准输入读取 YAML，然后真正提交给 Kubernetes API。前一个 `kubectl -n "$namespace"` 已经把目标命名空间写入生成的 YAML，所以这里不需要再写 `-n`。`apply` 具有“没有就创建、已经有就更新”的效果：第一次通常显示 `created`，重复执行通常显示 `configured`，不会因为 Secret 已存在而直接失败。
+
+因此，这个组合既保留了 `create secret tls` 对证书文件的正确打包方式，又让脚本可以安全重试和更新证书。管道不会把证书内容作为普通文本打印到屏幕；但它仍然会把私钥提交到 Kubernetes Secret，所以执行账号必须具备在三个命名空间创建或更新 Secret 的权限。
+
+**5. 循环结束与变量清理**
+
+```bash
+done
+unset TLS_DIR
+```
+
+- `done` 表示三个命名空间都处理完后退出循环。
+- `unset TLS_DIR` 只清除当前终端里的路径变量，不删除本地证书，也不删除 Kubernetes Secret。第 1 段生成的文件仍留在 `$HOME/k8s-platform/tls`，三个 Secret 也仍留在集群中。
+- 这里没有清除 `platform.env` 中的其他变量，因为后续步骤还要使用它们。
+
+整段命令的实际结果是：同一张服务器证书被三个 Ingress 分别引用，Traefik 可以在 `ci`、`spring-app` 和 `headlamp` 命名空间找到各自的 Secret；Mac 则通过已经信任的 CA 证书验证这张服务器证书。证书文件本身没有被复制三份到磁盘，复制的是 Kubernetes 中三个命名空间各自保存的 Secret 对象。
 
 成功时会出现三行 `secret/k8s-lab-tls created`；如果以前执行过，则会显示 `secret/k8s-lab-tls configured`。重新出现 `ubuntu@k8s-master:~$` 后，第 2 段结束。
 
@@ -3370,6 +3734,37 @@ roleRef:
   name: jenkins-deployer
 EOF
 ```
+
+#### 这三个 RBAC 对象怎样连成一条授权链
+
+可以先把三个对象分别记成三个问题：
+
+| 对象 | 它回答的问题 | 本例中的位置和含义 |
+| --- | --- | --- |
+| `ServiceAccount` | “哪个 Kubernetes 身份在调用 API？” | `ci/jenkins-deployer`，供临时 Agent Pod 使用 |
+| `Role` | “这个身份允许做什么？” | `spring-app/jenkins-deployer`，只列出应用发布所需的资源和动作 |
+| `RoleBinding` | “把哪个身份连接到哪组权限？” | `spring-app/jenkins-deployer`，把上面的 ServiceAccount 连接到上面的 Role |
+
+运行时可以这样看：
+
+```text
+临时 Agent Pod（位于 ci）
+  └─ serviceAccountName: jenkins-deployer
+       └─ API 身份：system:serviceaccount:ci:jenkins-deployer
+            └─ spring-app/RoleBinding/jenkins-deployer
+                 ├─ subject：ci/ServiceAccount/jenkins-deployer
+                 └─ roleRef：spring-app/Role/jenkins-deployer
+                      └─ 允许在 spring-app 操作指定的 Deployment、Service、
+                         ConfigMap、Pod、ReplicaSet 和 Ingress
+```
+
+这里有一个容易混淆的跨命名空间关系：`ServiceAccount` 在 `ci`，因为 Agent Pod 在 `ci`；`Role` 在 `spring-app`，因为它描述的是 `spring-app` 中的权限；`RoleBinding` 也在 `spring-app`，因为它把权限授予到这个目标命名空间。Role 仍然只在自己的 `spring-app` 命名空间生效，RoleBinding 只是引用了另一个命名空间中的身份，并不会移动 ServiceAccount，也不会把它变成集群管理员。
+
+`ServiceAccount` 自己不携带 Deployment 或 Ingress 权限，真正的权限来自 `Role` 加 `RoleBinding`。`RoleBinding` 也不是“创建权限”的对象，而是把“谁”与“允许做什么”连接起来。没有 RoleBinding，即使 ServiceAccount 和 Role 都存在，这个身份仍然不能按该 Role 执行操作。
+
+权限与容器镜像名称没有直接绑定。Kubernetes RBAC 判断的是 API 请求使用的身份、资源、动作和命名空间，不会因为镜像是 Maven、BuildKit 还是 Helm 就自动改变权限。理论上，任何拿到 `ci/jenkins-deployer` 身份 Token 的进程都可以尝试使用这组权限；因此本方案额外设置 `automountServiceAccountToken: false`，关闭所有容器的自动挂载，只把短期投射 Token 挂载给 Helm 容器。这样 Maven 和 BuildKit 没有 Kubernetes API Token，但这不是按镜像实现的 RBAC 隔离，仍应保护 Jenkins 配置和 Agent Pod 模板，避免未经授权的代码修改 Helm 容器或 Token 挂载设置。
+
+完整执行链路是：Jenkins Controller 使用 `ci/jenkins` 身份创建临时 Agent Pod；Agent Pod 声明使用 `ci/jenkins-deployer`；只有 Helm 容器获得短期 Token；Helm 请求 Kubernetes API 时，API Server 识别出 `system:serviceaccount:ci:jenkins-deployer`，再通过 `spring-app` 中的 RoleBinding 找到 Role，最后按 Role 逐条检查请求是允许还是拒绝。
 
 继续在 `k8s-master` 应用并验证权限：
 
