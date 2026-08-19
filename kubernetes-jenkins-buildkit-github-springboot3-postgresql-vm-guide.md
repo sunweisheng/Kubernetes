@@ -1950,6 +1950,152 @@ spec:
 EOF
 ```
 
+##### 6.3.1 这段配置解决什么问题
+
+第 6.1 节已经在 master 上创建并导出了两个真实目录，第 6.2 节已经证明各节点能够挂载 NFS。本节不再安装 NFS，也不会把数据复制进 Kubernetes；它是在 Kubernetes 中登记这两个目录，并为后续 Jenkins 和 PostgreSQL 提供固定的存储申请入口。
+
+整体关系如下：
+
+```text
+platform.env
+    │ envsubst 替换命名空间、NFS 地址和容量
+    ▼
+storage.yaml 渲染结果
+    │ kubectl apply 提交给 API Server
+    ├── Namespace：把不同用途的资源分开管理
+    ├── StorageClass：声明这是一组手工准备的静态 NFS 存储
+    ├── PV：登记 NFS 服务端地址、目录和可用容量
+    └── PVC：Jenkins 或 PostgreSQL 对存储提出申请
+
+后续 Pod ──引用 PVC──> PVC ──绑定──> PV ──指向──> NFS 真实目录
+```
+
+这里要区分三层：
+
+- NFS 目录是实际保存文件的位置，位于 master 的 `/srv/nfs/k8s/jenkins` 和 `/srv/nfs/k8s/postgresql`。
+- PV 是 Kubernetes 对现有存储的登记记录。创建 PV 不会自动创建服务端目录，也不会预先把 NFS 挂载到每个节点。
+- PVC 是应用使用存储时引用的名字。后续 Pod 被安排到某个节点后，该节点上的 kubelet 才根据 PV 信息挂载 NFS，并把它放进容器。
+
+##### 6.3.2 先读懂模板的共同结构
+
+第一条 `mkdir -p` 负责创建清单目录。目录已经存在时重复执行不会报错。后面的 `cat >` 把整段内容写入模板；`>` 表示覆盖同名模板，所以手工改过该文件时不要不经检查就重复执行。
+
+模板中的 Kubernetes 对象都使用相同的基本写法：
+
+| 写法 | 含义 |
+| --- | --- |
+| `apiVersion` | 这个对象使用哪个 Kubernetes API。Namespace、PV 和 PVC 属于核心 API，所以写 `v1`；StorageClass 属于存储 API，所以写 `storage.k8s.io/v1`。 |
+| `kind` | 要创建的对象类型，例如 Namespace、StorageClass、PersistentVolume 或 PersistentVolumeClaim。 |
+| `metadata` | 对象的身份信息，包括名称、所在命名空间和用于匹配的标签。 |
+| `spec` | 希望 Kubernetes 按照什么要求管理该对象，例如容量、访问方式和 NFS 地址。Namespace 这里只需要名称，所以没有 `spec`。 |
+| `---` | 一份 YAML 中不同对象之间的分隔线。`kubectl apply -f -` 会把每一段当成一个独立对象处理。 |
+| `${变量名}` | 等待 `envsubst` 替换的环境参数，实际值来自本方案的 `platform.env`。 |
+
+##### 6.3.3 为什么先创建四个命名空间
+
+`Namespace` 用来在同一个集群中划分资源的用途和管理边界。这里一次创建四个命名空间，是因为后面的资源会分别放入不同区域：
+
+| 模板变量 | 当前用途 | 后续主要资源 |
+| --- | --- | --- |
+| `${CI_NAMESPACE}` | 持续集成 | Jenkins Controller、临时 Agent Pod、`jenkins-home` PVC |
+| `${APP_NAMESPACE}` | 应用运行 | Spring Boot、PostgreSQL、`postgresql-data` PVC |
+| `${INGRESS_NAMESPACE}` | 统一入口 | Traefik Ingress Controller |
+| `${HEADLAMP_NAMESPACE}` | 集群管理界面 | Headlamp |
+
+命名空间可以避免不同用途的同名资源互相影响，也便于分别设置权限和查看资源。PV 和 StorageClass 是整个集群共用的对象，所以它们没有 `namespace` 字段；PVC 属于某个应用区域，所以必须写明命名空间。
+
+仅仅创建命名空间不会自动阻止不同命名空间之间的网络访问，也不会自动生成权限规则。需要网络隔离时还要配置 NetworkPolicy，需要限制人员和程序的操作权限时还要配置 RBAC。本节创建的是后续部署所需的管理边界，不应把它理解成已经完成安全隔离。
+
+##### 6.3.4 StorageClass 在静态 NFS 方案中的作用
+
+`nfs-static` 是这组存储的类别名称。PV 和 PVC 都写相同的 `storageClassName: nfs-static`，Kubernetes 才会把它们放在同一组中进行匹配。
+
+各字段含义如下：
+
+| 字段 | 本方案中的含义 |
+| --- | --- |
+| `provisioner: kubernetes.io/no-provisioner` | 不使用自动创建存储的程序。NFS 目录和 PV 都由本文命令提前手工准备。创建 PVC 时，Kubernetes 不会替我们创建目录或新的 PV。 |
+| `volumeBindingMode: Immediate` | PVC 创建后立即尝试绑定现有 PV，不等待 Pod 被安排到节点。NFS 可从所有节点访问，不需要根据某个节点的位置延迟选择存储。 |
+| `reclaimPolicy: Retain` | 表达保留数据的设计意图。因为本方案使用手工创建的静态 PV，删除 PVC 后最终是否保留由 PV 自己的 `persistentVolumeReclaimPolicy: Retain` 决定。 |
+
+StorageClass 只负责分类和绑定规则，不是 NFS 服务，也不保存业务数据。
+
+本实验只有 Jenkins 和 PostgreSQL 两个已知目录，使用静态 PV 可以直接看清“真实目录、PV、PVC、Pod”之间的关系，也减少额外组件，适合培训。它的限制同样明确：每增加一个存储申请，都要人工准备目录和 PV；声明容量不会限制真实磁盘占用；master 同时承担 NFS 服务，一旦该主机或磁盘故障，两个应用的存储都会受影响。因此这是一套学习和验证方案，不是生产环境的高可用存储方案。生产环境需要根据备份恢复、性能、容量限制和故障切换要求，选择云盘、托管数据库或具有高可用能力的存储系统。
+
+##### 6.3.5 两个 PV 分别登记了什么
+
+两个 `PersistentVolume` 分别对应 Jenkins 和 PostgreSQL 的真实 NFS 目录：
+
+| PV | 标签 | NFS 目录 | 将要服务的应用 |
+| --- | --- | --- | --- |
+| `jenkins-nfs-pv` | `storage-owner: jenkins` | `/srv/nfs/k8s/jenkins` | Jenkins Controller 的工作目录 |
+| `postgresql-nfs-pv` | `storage-owner: postgresql` | `/srv/nfs/k8s/postgresql` | PostgreSQL 数据目录 |
+
+PV 中几个容易混淆的字段需要单独理解：
+
+- `capacity.storage` 是提供给 Kubernetes 进行匹配的容量声明，不会给 NFS 目录创建磁盘配额，也不会在 master 磁盘上提前划出一块独占空间。
+- `volumeMode: Filesystem` 表示应用看到的是普通文件系统目录，不是直接使用一块裸磁盘。
+- `accessModes: ReadWriteMany` 表示这个卷允许被多个节点以读写方式挂载，符合 NFS 的使用方式。它不是 Linux 文件权限，不能替代目录属主、权限位和 NFS 导出规则；它也不代表 PostgreSQL 可以启动多个实例同时写同一数据目录。
+- `storageClassName: nfs-static` 把 PV 放入前面创建的静态 NFS 类别。
+- `labels.storage-owner` 是本方案为精确配对增加的标签，防止 Jenkins 的申请误绑定到 PostgreSQL 的目录。
+- `persistentVolumeReclaimPolicy: Retain` 表示 PVC 被删除后保留 PV 对应的数据。PV 通常会进入 `Released`，不会自动恢复为可再次绑定的空闲状态；是否清理旧数据和重新使用，必须由管理员确认。
+
+`nfs.server` 来自 `${NFS_SERVER}`，`nfs.path` 必须与第 6.1 节真正导出的目录完全一致。Kubernetes 创建 PV 时只保存这些信息，不会连接 NFS 检查地址和目录是否可用。
+
+`mountOptions` 会在 Pod 实际使用 PVC 时交给所在节点的 NFS 客户端：
+
+| 参数 | 作用和故障表现 |
+| --- | --- |
+| `nfsvers=4.2` | 固定使用 NFS 4.2，避免不同节点自行选择不同版本。服务端或客户端不支持 4.2 时，Pod 挂载会失败。 |
+| `hard` | NFS 暂时不可达时持续重试，避免把暂时的网络故障直接当成写入成功或永久失败。代价是访问该目录的进程可能一直等待，直到 NFS 恢复。 |
+| `timeo=600` | 按 Linux NFS 客户端的定义，单次请求等待时间为 60 秒。它不是 Pod 启动超时时间。 |
+| `retrans=2` | 一轮请求超时后的重试次数。与 `hard` 一起使用时，超过这一轮不会永久放弃挂载或读写，而是报告服务端无响应并继续重试。 |
+
+##### 6.3.6 PVC 如何选中正确的 PV
+
+`jenkins-home` 和 `postgresql-data` 是后续应用真正引用的存储申请。Kubernetes 绑定 PVC 与 PV 时，需要同时满足以下条件：
+
+1. PVC 与 PV 的 `storageClassName` 相同。
+2. PVC 的 `selector.matchLabels` 能匹配 PV 标签。
+3. PV 声明的容量不小于 PVC 申请的容量。
+4. PV 支持 PVC 要求的 `ReadWriteMany`，并且两者的卷模式兼容。
+5. PV 当前处于 `Available`，没有被其他 PVC 占用。
+
+本方案为每个 PV 声明 `10Gi`，每个 PVC 申请 `8Gi`，所以容量条件满足。多出的声明容量不会被另一个 PVC 继续使用：一个 PV 与一个 PVC 绑定后，这个 PV 就被该 PVC 占用。
+
+PVC 中没有直接填写 NFS 地址和目录。这样后续 Jenkins 或 PostgreSQL 只需要引用各自的 PVC 名称，不需要知道底层 NFS 放在哪里。以后更换存储时，应用配置仍可继续使用原来的 PVC 名称，但管理员还必须单独制定数据迁移以及 PV/PVC 重建步骤，不能直接修改正在使用的 PV 地址。
+
+##### 6.3.7 模板为什么使用带引号的 `EOF`
+
+`cat > ... <<'EOF'` 中的单引号很重要。创建模板时，Shell 不会立即展开 `${CI_NAMESPACE}`、`${NFS_SERVER}` 等变量，这些占位内容会原样写入 `storage.yaml.tpl`。随后执行 `source platform.env` 和 `envsubst`，才会使用当前环境的实际值生成提交给 Kubernetes 的 YAML。
+
+这样做可以让云服务器方案和虚拟机方案使用相同结构，只在各自的 `platform.env` 中维护环境参数。重新执行 `cat >` 会覆盖本地模板文件，但不会删除已经创建的 Kubernetes 对象或 NFS 数据；真正修改集群的是后面的 `kubectl apply`。
+
+##### 6.3.8 怎样理解检查结果
+
+执行 `envsubst | kubectl apply` 后，API Server 依次接收命名空间、StorageClass、PV 和 PVC。正常情况下，两个 PV 应从 `Available` 很快变为 `Bound`，两个 PVC 也应显示 `Bound`。
+
+`Bound` 只证明 Kubernetes 中的类别、标签、容量和访问模式匹配成功。绑定过程不会试挂载 NFS，因此它不能单独证明下面这些事情：
+
+- `${NFS_SERVER}` 从每个节点都能访问。
+- TCP `2049` 没有被防火墙或云安全策略拦截。
+- NFS 服务端确实导出了对应目录。
+- 节点已经安装 `nfs-common` 并支持 NFS 4.2。
+- Jenkins 和 PostgreSQL 的运行用户对目录具有正确权限。
+
+第 6.2 节的手工挂载测试负责证明节点到 NFS 的基础连接；后续 Pod 真正启动并读写成功，才能证明从 PVC 到 NFS 目录的完整链路可用。
+
+常见现象可按下表判断：
+
+| 现象 | 优先检查 |
+| --- | --- |
+| PVC 长时间为 `Pending` | PV 是否为 `Available`，StorageClass、标签、容量、访问模式是否匹配，模板变量是否被正确替换 |
+| PVC 已是 `Bound`，Pod 长时间为 `ContainerCreating` | `kubectl describe pod` 中的挂载事件，以及 NFS 地址、导出目录、TCP `2049`、`nfs-common` 和 NFS 版本 |
+| Pod 已启动，但写入提示 `Permission denied` | NFS 目录属主和权限、容器运行用户的 UID/GID、导出规则中的 `root_squash` |
+| 删除 PVC 后 PV 为 `Released`，数据仍在 | 这是 `Retain` 的预期结果；确认数据是否还需要，再决定是否人工清理和重新使用 |
+
+排查时先看 `kubectl get pv` 和 `kubectl get pvc -A` 的状态，再对异常对象执行 `kubectl describe pv <PV名称>`、`kubectl describe pvc -n <命名空间> <PVC名称>`。`Events` 中的信息比反复删除重建更能说明具体是哪一项不匹配。
+
 本方案把两个 PV 设为 `10Gi`、两个 PVC 设为 `8Gi`，用于控制实验数据规模。静态 NFS PV 的 `capacity` 只是 Kubernetes 调度声明，不会给 NFS 目录创建真实配额，因此还要定期在 NFS 服务器执行 `df -h /srv/nfs/k8s`，不能依赖 PVC 容量阻止宿主磁盘写满。需要保存更多 Jenkins 构建记录或数据库数据时，先扩容 master 磁盘，再同步提高声明容量。
 
 应用并检查：
